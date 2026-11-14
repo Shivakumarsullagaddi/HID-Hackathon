@@ -26,6 +26,7 @@ from backend.db import alembic_config, make_engine, utcnow
 
 from . import config, service
 from .models import Alert, Decision, ExamWindow, Kiosk, Room, ScheduleRule, User
+from .reconcile import on_new_record
 
 log = logging.getLogger("spoof.central")
 ADMIN_PAGE = config.ROOT / "central" / "admin.html"
@@ -283,8 +284,8 @@ def create_app(db_url=None, hmac_key=None, clock=None, check_schema=True):
     def admin_page(request: Request):
         return FileResponse(ADMIN_PAGE, headers={"Cache-Control": "no-store"})
 
-    # Per-record hook run during intake (reconciler and hash-chain check).
-    app.state.on_new = None
+    # Per-record hook run during intake for each NEW record.
+    app.state.on_new = on_new_record
     return app
 
 

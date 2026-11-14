@@ -4,9 +4,184 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spot-a-Spoof · Central</title>
+  <style>
+    :root { color-scheme: dark; --bg:#111110; --surface:#1a1a19; --line:#34342f; --text:#f0efec;
+            --text-2:#c3c2b7; --text-3:#8f8e85; --accent:#3987e5; --good:#0ca30c; --warn:#fab219; --bad:#d03b3b; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
+    header { padding:12px 20px; background:var(--surface); border-bottom:1px solid var(--line);
+             display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+    header h1 { font-size:16px; margin:0; }
+    main { max-width:1200px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+    section { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:14px; }
+    h2 { font-size:15px; margin:0 0 10px; }
+    table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+    th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--text-3); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .scroll { overflow-x:auto; }
+    .muted { color:var(--text-3); }
+    .pill { display:inline-flex; gap:6px; align-items:center; padding:1px 9px; border:1px solid var(--line);
+            border-radius:99px; font-size:12px; white-space:nowrap; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--text-3); }
+    .good { background:var(--good); } .warn { background:var(--warn); } .bad { background:var(--bad); }
+    button { font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:6px;
+             padding:5px 10px; cursor:pointer; }
+    button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); }
+    input, select { font:inherit; color:var(--text); background:#242422; border:1px solid var(--line);
+                    border-radius:6px; padding:5px 7px; }
+    form { display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-top:10px; }
+    label { display:grid; gap:2px; font-size:12px; color:var(--text-2); }
+    .two { display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+    @media (max-width:900px) { .two { grid-template-columns:1fr; } }
+    #msg { color:var(--warn); }
+  </style>
 </head>
 <body>
-  <h1>Central admin</h1>
-  <p>Admin page arrives in build step 7.</p>
+<header>
+  <h1>Spot-a-Spoof · central admin</h1>
+  <span id="summary" class="muted"></span>
+  <span id="msg"></span>
+</header>
+<main>
+  <section>
+    <h2>Alerts</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>When</th><th>Type</th><th>User</th><th>Detail</th></tr></thead>
+      <tbody id="alerts"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Users</h2>
+    <p class="muted" style="margin:0 0 8px">Suspending someone bumps the snapshot version. An online
+      kiosk picks it up within about 5 s; an offline kiosk only when it reconnects.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>ID</th><th>Name</th><th>Standing</th><th>Schedule rules (local time)</th><th></th></tr></thead>
+      <tbody id="users"></tbody>
+    </table></div>
+    <form id="rule-form">
+      <label>User <select id="r-user"></select></label>
+      <label>Room <select id="r-room"></select></label>
+      <label>Days <select id="r-days">
+        <option value="127">Every day</option><option value="31">Mon to Fri</option>
+        <option value="96">Sat and Sun</option></select></label>
+      <label>From <input id="r-start" type="time" value="09:00" required></label>
+      <label>To <input id="r-end" type="time" value="17:00" required></label>
+      <button>Add rule</button>
+    </form>
+  </section>
+
+  <div class="two">
+    <section>
+      <h2>Exam windows</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Room</th><th>From</th><th>To</th><th></th></tr></thead>
+        <tbody id="exams"></tbody>
+      </table></div>
+      <form id="exam-form">
+        <label>Room <select id="e-room"></select></label>
+        <label>Starting now, minutes <input id="e-min" type="number" value="60" min="1" max="1440"></label>
+        <button>Start exam window</button>
+      </form>
+    </section>
+    <section>
+      <h2>Kiosks and rooms</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Kiosk</th><th>Room</th><th>Last seen</th><th>Last seq</th></tr></thead>
+        <tbody id="kiosks"></tbody>
+      </table></div>
+      <div id="rooms" class="muted" style="margin-top:8px"></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Last 50 decisions</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Time</th><th>Room</th><th>User</th><th>Biometric</th><th>Final</th><th>Reason</th>
+        <th>Kiosk state</th><th>Snapshot</th></tr></thead>
+      <tbody id="decisions"></tbody>
+    </table></div>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DAY = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const days = (mask) => mask === 127 ? 'every day' : mask === 31 ? 'Mon to Fri'
+  : DAY.filter((_, i) => mask >> i & 1).join(' ');
+const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
+const dot = (cls, text) => `<span class="pill"><span class="dot ${cls}"></span>${esc(text)}</span>`;
+const decCls = (d) => d === 'ALLOW' ? 'good' : d === 'DENY' ? 'bad' : 'warn';
+const stateCls = (s) => s === 'ONLINE' ? 'good' : s === 'LOCKED' ? 'bad' : 'warn';
+
+async function api(path, opts = {}) {
+  if (opts.body) opts = { ...opts, body: JSON.stringify(opts.body), headers: { 'Content-Type': 'application/json' } };
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${r.status}`);
+  return data;
+}
+
+let users = [];
+async function load() {
+  const [summary, us, alerts, decisions, exams, kiosks, rooms] = await Promise.all([
+    api('/summary'), api('/users'), api('/alerts'), api('/decisions?limit=50'),
+    api('/exam_windows'), api('/kiosks'), api('/rooms')]);
+  users = us;
+  $('#summary').textContent = `snapshot version ${summary.snapshot_version} · ${summary.users} users · ` +
+    `${summary.decisions} decisions · ${summary.alerts} alerts`;
+  $('#alerts').innerHTML = alerts.length ? alerts.map((a) => `<tr><td>${esc(when(a.created_at))}</td>
+    <td>${dot('bad', a.type)}</td><td>${esc(a.user_id || '')}</td><td>${esc(a.detail)}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="muted">No alerts.</td></tr>';
+  $('#users').innerHTML = us.map((u) => `<tr><td>${esc(u.id)}</td><td>${esc(u.name)}</td>
+    <td>${dot(u.standing === 'active' ? 'good' : 'bad', u.standing)}</td>
+    <td>${u.rules.map((r) => `${esc(r.room_id)}: ${esc(days(r.days_mask))} ${hhmm(r.start_min)} to ${hhmm(r.end_min)}
+      <button class="ghost" data-del-rule="${r.id}" title="Delete rule">x</button>`).join('<br>') || '<span class="muted">none</span>'}</td>
+    <td><button data-standing="${esc(u.id)}" data-next="${u.standing === 'active' ? 'suspended' : 'active'}">
+      ${u.standing === 'active' ? 'Suspend' : 'Reinstate'}</button></td></tr>`).join('');
+  const roomOpts = rooms.map((r) => `<option value="${esc(r.id)}">${esc(r.name)} (${esc(r.id)})</option>`).join('');
+  for (const sel of ['#r-room', '#e-room']) if (!$(sel).options.length) $(sel).innerHTML = roomOpts;
+  const keep = $('#r-user').value;
+  $('#r-user').innerHTML = us.map((u) => `<option value="${esc(u.id)}">${esc(u.id)} ${esc(u.name)}</option>`).join('');
+  if (keep) $('#r-user').value = keep;
+  $('#exams').innerHTML = exams.length ? exams.map((w) => `<tr><td>${esc(w.room_id)}</td><td>${esc(when(w.starts_at))}</td>
+    <td>${esc(when(w.ends_at))}</td><td><button class="ghost" data-del-exam="${w.id}">Delete</button></td></tr>`).join('')
+    : '<tr><td colspan="4" class="muted">None.</td></tr>';
+  $('#kiosks').innerHTML = kiosks.map((k) => `<tr><td>${esc(k.id)}</td><td>${esc(k.room_id)}</td>
+    <td>${esc(when(k.last_seen_at)) || '<span class="muted">never</span>'}</td><td>${k.last_seq}</td></tr>`).join('');
+  $('#rooms').textContent = rooms.map((r) => `${r.id}: risk ${r.risk_level}, snapshot TTL ${r.snapshot_ttl_s} s`).join(' · ');
+  $('#decisions').innerHTML = decisions.length ? decisions.map((d) => `<tr><td>${esc(when(d.ts))}</td>
+    <td>${esc(d.room_id)}</td><td>${esc(d.user_id || '')}</td><td>${esc(d.bio_decision)}</td>
+    <td>${dot(decCls(d.final_decision), d.final_decision)}</td><td>${esc(d.reason)}</td>
+    <td>${dot(stateCls(d.kiosk_state), d.kiosk_state)}</td><td>v${esc(d.snapshot_version)}</td></tr>`).join('')
+    : '<tr><td colspan="8" class="muted">No decisions synced yet.</td></tr>';
+}
+
+async function act(fn) {
+  $('#msg').textContent = '';
+  try { await fn(); await load(); } catch (e) { $('#msg').textContent = e.message; }
+}
+
+document.body.addEventListener('click', (ev) => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  if (b.dataset.standing) act(() => api(`/users/${b.dataset.standing}`, { method: 'PATCH', body: { standing: b.dataset.next } }));
+  if (b.dataset.delRule) act(() => api(`/rules/${b.dataset.delRule}`, { method: 'DELETE' }));
+  if (b.dataset.delExam) act(() => api(`/exam_windows/${b.dataset.delExam}`, { method: 'DELETE' }));
+});
+$('#rule-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  act(() => api('/rules', { method: 'POST', body: { user_id: $('#r-user').value, room_id: $('#r-room').value,
+    days_mask: Number($('#r-days').value), start_min: toMin($('#r-start').value), end_min: toMin($('#r-end').value) || 1440 } }));
+});
+$('#exam-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  act(() => api('/exam_windows', { method: 'POST', body: { room_id: $('#e-room').value, minutes: Number($('#e-min').value) } }));
+});
+load().catch((e) => { $('#msg').textContent = e.message; });
+setInterval(() => load().catch((e) => { $('#msg').textContent = e.message; }), 5000);
+</script>
 </body>
 </html>
