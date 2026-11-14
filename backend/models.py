@@ -17,13 +17,33 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+FinalDecision = Literal["ALLOW", "STEP_UP_VERIFICATION", "DENY"]
+KioskState = Literal["ONLINE", "DEGRADED", "LOCKED"]
+RoomId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]{1,32}$")]
+Pin = Annotated[str, StringConstraints(pattern=r"^\d{4,8}$")]
+
+
 class VerifyRequest(StrictModel):
+    # extra="forbid": a client can never supply kiosk_state or schedule_status.
     frames: list[Frame] = Field(min_length=3, max_length=5)
     user_id: Optional[str] = Field(None, max_length=32)      # optional 1:1 claim
     clip_label: Optional[str] = Field(None, max_length=120)  # free-text tag, logged
+    room_id: Optional[RoomId] = None                         # default: the kiosk's room
 
 
-class VerifyResponse(BaseModel):
+class AccessFields(BaseModel):
+    final_decision: Optional[FinalDecision] = None
+    final_reason: Optional[str] = None
+    bio_decision: Optional[Decision] = None
+    schedule_status: Optional[Literal["in_window", "outside_window", "no_rule"]] = None
+    kiosk_state: Optional[KioskState] = None
+    snapshot_version: Optional[int] = None
+    record_id: Optional[str] = None
+    room_id: Optional[str] = None
+
+
+class VerifyResponse(AccessFields):
+    # decision/reason: the biometric result, kept for compatibility (harness).
     decision: Decision
     reason: str
     liveness: float
@@ -63,10 +83,12 @@ class BlinkRequest(StrictModel):
     frames: list[Frame] = Field(min_length=config.BLINK_MIN_FRAMES,
                                 max_length=config.BLINK_MAX_FRAMES)
     request_id: Optional[str] = Field(None, max_length=64)  # links to the first decision
+    pin: Optional[Pin] = None   # required when the kiosk is DEGRADED; never logged
 
 
-class BlinkResponse(BaseModel):
+class BlinkResponse(AccessFields):
     blinked: bool
+    pin_checked: Optional[bool] = None
     liveness: float
     # Present when request_id pointed at a pending REQUEST_VERIFICATION.
     decision: Optional[Decision] = None

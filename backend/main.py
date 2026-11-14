@@ -90,12 +90,15 @@ def status():
 def verify(req: VerifyRequest):
     if req.user_id and not pipe().store.get_user(req.user_id):
         raise HTTPException(404, f"unknown user_id {req.user_id}")
-    return pipe().verify(frames_or_400(req.frames), req.user_id, req.clip_label)
+    if req.room_id and req.room_id not in config.ROOM_CHOICES:
+        raise HTTPException(400, f"unknown room_id {req.room_id}")
+    return pipe().verify(frames_or_400(req.frames), req.user_id, req.clip_label,
+                         room_id=req.room_id)
 
 
 @app.post("/api/stepup/blink", response_model=BlinkResponse)
 def stepup_blink(req: BlinkRequest):
-    return pipe().stepup_blink(frames_or_400(req.frames), req.request_id)
+    return pipe().stepup_blink(frames_or_400(req.frames), req.request_id, pin=req.pin)
 
 
 # ---- users -------------------------------------------------------------
