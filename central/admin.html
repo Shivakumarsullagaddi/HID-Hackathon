@@ -114,6 +114,8 @@ const days = (mask) => mask === 127 ? 'every day' : mask === 31 ? 'Mon to Fri'
 const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
 const dot = (cls, text) => `<span class="pill"><span class="dot ${cls}"></span>${esc(text)}</span>`;
 const decCls = (d) => d === 'ALLOW' ? 'good' : d === 'DENY' ? 'bad' : 'warn';
+// One name for the middle outcome; REQUEST_VERIFICATION is the internal biometric label.
+const label = (d) => ({ STEP_UP_VERIFICATION: 'STEP-UP', REQUEST_VERIFICATION: 'STEP-UP' }[d] || d);
 const stateCls = (s) => s === 'ONLINE' ? 'good' : s === 'LOCKED' ? 'bad' : 'warn';
 
 async function api(path, opts = {}) {
@@ -153,8 +155,8 @@ async function load() {
     <td>${esc(when(k.last_seen_at)) || '<span class="muted">never</span>'}</td><td>${k.last_seq}</td></tr>`).join('');
   $('#rooms').textContent = rooms.map((r) => `${r.id}: risk ${r.risk_level}, snapshot TTL ${r.snapshot_ttl_s} s`).join(' · ');
   $('#decisions').innerHTML = decisions.length ? decisions.map((d) => `<tr><td>${esc(when(d.ts))}</td>
-    <td>${esc(d.room_id)}</td><td>${esc(d.user_id || '')}</td><td>${esc(d.bio_decision)}</td>
-    <td>${dot(decCls(d.final_decision), d.final_decision)}</td><td>${esc(d.reason)}</td>
+    <td>${esc(d.room_id)}</td><td>${esc(d.user_id || '')}</td><td>${esc(label(d.bio_decision))}</td>
+    <td>${dot(decCls(d.final_decision), label(d.final_decision))}</td><td>${esc(d.reason)}</td>
     <td>${dot(stateCls(d.kiosk_state), d.kiosk_state)}</td><td>v${esc(d.snapshot_version)}</td></tr>`).join('')
     : '<tr><td colspan="8" class="muted">No decisions synced yet.</td></tr>';
 }
