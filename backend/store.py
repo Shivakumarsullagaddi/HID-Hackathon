@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 
 from . import config
 from .db import make_engine, sqlite_url, upgrade
-from .kiosk_models import DecisionLog, DecisionOutbox, Template, UserCache
+from .kiosk_models import DecisionLog, DecisionOutbox, SnapshotMeta, Template, UserCache
 
 
 def now_iso():
@@ -192,6 +192,10 @@ class Store:
         with self.session() as s:
             return [json.loads(p) for p in
                     s.scalars(select(DecisionLog.payload).order_by(DecisionLog.id))]
+
+    def snapshot_meta(self):
+        with self.session() as s:
+            return s.get(SnapshotMeta, 1)
 
     def outbox_counts(self):
         with self.session() as s:
