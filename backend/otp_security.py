@@ -8,6 +8,18 @@ Standalone, modular security hardening layer providing:
 5. Lightweight anti-replay frame SHA-256 cache (10s TTL).
 6. 3-strike rate limiter with temporary lockout per user.
 """
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment variables from .env (checks current directory and backend/.env)
+load_dotenv()
+_backend_env = Path(__file__).resolve().parent / ".env"
+if _backend_env.exists():
+    load_dotenv(_backend_env)
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+if _root_env.exists():
+    load_dotenv(_root_env)
+
 import hashlib
 import hmac
 import logging
@@ -73,6 +85,10 @@ class VerifyOtpRequest(BaseModel):
 class HardenedVerifyResponse(VerifyResponse):
     challenge_id: Optional[str] = None
     demo_otp: Optional[str] = None
+    masked_email: Optional[str] = None
+    otp_sent: Optional[bool] = None
+    email_delivery_status: Optional[str] = None
+    fallback_reason: Optional[str] = None
 
 
 # ---- Anti-Replay Frame SHA-256 Cache -----------------------------------
@@ -209,6 +225,117 @@ class AuditEntry:
         }
 
 
+# ---- Email Delivery & Masking Helpers ---------------------------------
+
+def mask_email(email: Optional[str]) -> str:
+    """Mask email for privacy in API responses, e.g. shivakumar@gmail.com -> sh****@gmail.com."""
+    if not email or "@" not in email:
+        return "sh****@gmail.com"
+    user, domain = email.split("@", 1)
+    if len(user) <= 2:
+        masked_user = user[0] + "****" if len(user) == 1 else user[:2] + "****"
+    else:
+        masked_user = user[:2] + "****"
+    return f"{masked_user}@{domain}"
+
+
+def send_otp_email(recipient_email: str, otp_code: str, user_id: str = "") -> bool:
+    """Sends OTP verification code via SMTP (port 587 STARTTLS, fallback to port 465 SSL).
+
+    Configured via environment variables:
+      SMTP_HOST (default: smtp.gmail.com)
+      SMTP_PORT (default: 587)
+      SMTP_USER
+      SMTP_PASSWORD
+      SMTP_FROM
+    """
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    try:
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    except (ValueError, TypeError):
+        smtp_port = 587
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    raw_password = os.getenv("SMTP_PASSWORD") or ""
+    # Strip any accidental spaces from password (e.g. Gmail app passwords 'xxxx yyyy zzzz wwww')
+    smtp_password = raw_password.replace(" ", "").strip()
+    sender = (os.getenv("SMTP_FROM") or smtp_user or "security@spotaspoof.com").strip()
+
+    if not (smtp_user and smtp_password):
+        err_msg = "SMTP credentials missing (SMTP_USER/SMTP_PASSWORD not configured in .env)"
+        print(f"[OTP EMAIL ERROR]: {err_msg}")
+        log.warning("[OTP EMAIL ERROR]: %s. Simulating delivery of OTP '%s' to '%s' (user: %s)",
+                    err_msg, otp_code, recipient_email, user_id)
+        return False
+
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Spot-a-Spoof Security Verification Code: {otp_code}"
+    msg["From"] = sender
+    msg["To"] = recipient_email
+
+    text_content = (
+        f"Hello,\n\n"
+        f"Your one-time security verification code is: {otp_code}\n\n"
+        f"This single-use code expires in 60 seconds.\n"
+        f"If you did not initiate this verification, someone may be attempting to verify identity under your account ({user_id}).\n\n"
+        f"Spot-a-Spoof Security Team"
+    )
+    html_content = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 24px;">
+        <div style="max-width: 480px; margin: 0 auto; background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155;">
+          <h2 style="color: #38bdf8; margin-top: 0;">Security Verification Required</h2>
+          <p style="color: #cbd5e1; font-size: 14px;">A secondary security challenge was triggered during facial verification.</p>
+          <div style="background: #0f172a; border-radius: 8px; padding: 16px; text-align: center; margin: 20px 0; border: 1px dashed #64748b;">
+            <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #facc15;">{otp_code}</span>
+          </div>
+          <p style="color: #94a3b8; font-size: 12px; margin: 0;">Valid for <strong>60 seconds</strong> (single-use).</p>
+        </div>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+
+    # Attempt 1: SMTP port 587 with STARTTLS
+    errors = []
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=8) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(sender, [recipient_email], msg.as_string())
+        print(f"[OTP EMAIL SENT] Code {otp_code} successfully delivered to {recipient_email} via {smtp_host}:{smtp_port} (user: {user_id})")
+        log.info("[OTP EMAIL SENT] Successfully sent OTP code to %s via %s:%s", recipient_email, smtp_host, smtp_port)
+        return True
+    except Exception as e:
+        err_msg = f"Port {smtp_port} STARTTLS failed ({e})"
+        errors.append(err_msg)
+        log.warning("[OTP EMAIL] %s. Falling back to SSL (port 465)...", err_msg)
+
+    # Attempt 2: Fallback to SMTP_SSL on port 465
+    try:
+        with smtplib.SMTP_SSL(smtp_host, 465, timeout=8) as server:
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(sender, [recipient_email], msg.as_string())
+        print(f"[OTP EMAIL SENT] Code {otp_code} successfully delivered to {recipient_email} via {smtp_host}:465 (SSL fallback) (user: {user_id})")
+        log.info("[OTP EMAIL SENT] Successfully sent OTP code to %s via %s:465 (SSL fallback)", recipient_email, smtp_host)
+        return True
+    except Exception as e:
+        err_msg = f"Port 465 SSL failed ({e})"
+        errors.append(err_msg)
+
+    combined_err = "; ".join(errors)
+    print(f"[OTP EMAIL ERROR]: {combined_err}")
+    log.error("[OTP EMAIL ERROR]: %s", combined_err)
+    return False
+
+
 # ---- In-Memory Challenge Record ----------------------------------------
 
 @dataclass
@@ -220,6 +347,7 @@ class Challenge:
     similarity_score: float
     created_at: float
     expires_at: float
+    email: Optional[str] = None
     attempts: int = 0
     burned: bool = False
 
@@ -251,7 +379,8 @@ class ChallengeManager:
             if (now - c.created_at) < (self.ttl * 2) and not (c.burned and (now - c.created_at > self.ttl))
         }
 
-    def create_challenge(self, user_id: str, liveness_score: float, similarity_score: float) -> Dict[str, Any]:
+    def create_challenge(self, user_id: str, liveness_score: float, similarity_score: float,
+                         email: Optional[str] = None) -> Dict[str, Any]:
         """Creates a single-use 6-digit OTP challenge.
 
         Strictly rejects if liveness < 0.50 or similarity < 80.0 (hard biometric floor).
@@ -286,6 +415,7 @@ class ChallengeManager:
             similarity_score=similarity_score,
             created_at=now,
             expires_at=now + self.ttl,
+            email=email,
             attempts=0,
             burned=False,
         )
@@ -294,8 +424,8 @@ class ChallengeManager:
             self._cleanup_expired(now)
             self._challenges[challenge_id] = challenge
 
-        log.info("[OTP SECURITY] Challenge created: id=%s user=%s OTP=%s (TTL %ds)",
-                 challenge_id, user_id, otp_code, int(self.ttl))
+        log.info("[OTP SECURITY] Challenge created: id=%s user=%s email=%s OTP=%s (TTL %ds)",
+                 challenge_id, user_id, email or "none", otp_code, int(self.ttl))
 
         # Optional cloud delivery via AWS SNS/SES if configured
         self._send_cloud_notification(user_id, otp_code)
@@ -304,9 +434,29 @@ class ChallengeManager:
             "challenge_id": challenge_id,
             "otp_code": otp_code,
             "user_id": user_id,
+            "email": email,
             "expires_in": int(self.ttl),
             "created_at": now,
         }
+
+    def set_challenge_email(self, challenge_id: str, email: str) -> None:
+        with self._lock:
+            if challenge_id in self._challenges:
+                self._challenges[challenge_id].email = email
+
+    def get_active_challenge(self, challenge_id: str) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        with self._lock:
+            c = self._challenges.get(challenge_id)
+            if not c or c.burned or c.attempts >= 1 or now > c.expires_at:
+                return None
+            return {
+                "challenge_id": c.challenge_id,
+                "user_id": c.user_id,
+                "otp_code": c.otp_code,
+                "email": c.email,
+                "expires_at": c.expires_at,
+            }
 
     def verify_otp(self, challenge_id: str, otp_code: str) -> Dict[str, Any]:
         """Verifies OTP code with single-use burn, expiry, HMAC signing, and audit chaining."""

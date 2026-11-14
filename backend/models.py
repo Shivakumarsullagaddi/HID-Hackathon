@@ -42,17 +42,20 @@ class VerifyResponse(BaseModel):
 class EnrolRequest(StrictModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
     frames: list[Frame] = Field(min_length=5, max_length=5)
+    email: Optional[str] = Field(None, max_length=120)
 
 
 class EnrolResponse(BaseModel):
     user_id: str
     status: str
+    email: Optional[str] = None
 
 
 class UserOut(BaseModel):
     id: str
     name: str
     standing: Standing
+    email: Optional[str] = None
 
 
 class StandingUpdate(StrictModel):

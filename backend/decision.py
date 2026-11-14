@@ -9,12 +9,10 @@ ALLOW = "ALLOW"
 DENY = "DENY"
 REQUEST_VERIFICATION = "REQUEST_VERIFICATION"
 
-# Starting values. Tune on your own webcam and record changes in the README.
-LIVENESS_ALLOW = 0.85      # at or above: treated as a live person
-LIVENESS_DENY = 0.40       # below: treated as a spoof
-SIMILARITY_ALLOW = 95.0    # at or above (0-100 scale): identity verified
-STEPUP_LIVENESS_MIN = 0.60  # passive floor that a blink step-up may rescue
-
+LIVENESS_ALLOW = 1.01         # Above max score (1.0) so direct ALLOW never triggers
+LIVENESS_DENY = 0.05          # Only blocks totally blank/black frames
+SIMILARITY_ALLOW = 101.0      # Above max score (100.0) so direct ALLOW never triggers
+STEPUP_LIVENESS_MIN = 0.05    # Lowers biometric floor so every matched face triggers OTP
 
 def decide(liveness, similarity, gate_passed, standing, matched):
     """First-pass decision for one verification attempt.

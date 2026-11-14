@@ -191,7 +191,7 @@ class Pipeline:
         return out
 
     # ---- enrolment -----------------------------------------------------
-    def enrol(self, name, frames):
+    def enrol(self, name, frames, email=None):
         """Mean embedding over 5 frames; every frame must show a usable face."""
         if not self.faces.identity_available:
             raise FrameError(f"identity model unavailable: {self.faces.error}")
@@ -205,4 +205,4 @@ class Pipeline:
         if not gate_passed:
             raise FrameError(f"image quality too low to enrol: {gate_reason}")
         emb = mean_embedding([self.faces.embed(f, fc) for f, fc in zip(frames, faces)])
-        return self.store.add_user(name, emb.tolist())
+        return self.store.add_user(name, emb.tolist(), email=email)

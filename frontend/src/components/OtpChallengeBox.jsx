@@ -7,15 +7,19 @@ import React, { useState, useEffect, useRef } from 'react';
  * Accepts:
  *   - challengeId: string (required) - UUID of the pending security challenge
  *   - demoOtpHint: string (optional) - Dev/hackathon demo OTP code hint
+ *   - maskedEmail: string (optional) - Registered email, e.g. "sh****@gmail.com"
  *   - onVerified: function(response) - Callback on successful verification
  *   - onCancel: function() - Callback when user cancels or dismisses
  */
-export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, onCancel }) {
+export default function OtpChallengeBox({ challengeId, demoOtpHint, maskedEmail, onVerified, onCancel }) {
   const [digits, setDigits] = useState(['', '', '', '', '', '']);
   const [timeLeft, setTimeLeft] = useState(60);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [resendMsg, setResendMsg] = useState(null);
 
   const inputRefs = useRef([]);
 
@@ -34,6 +38,15 @@ export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, 
     }, 1000);
     return () => clearInterval(timer);
   }, [timeLeft]);
+
+  // Resend cooldown timer
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const id = setInterval(() => {
+      setResendCooldown((c) => (c <= 1 ? 0 : c - 1));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [resendCooldown]);
 
   // Auto-focus first input box on mount
   useEffect(() => {
@@ -85,18 +98,28 @@ export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, 
     }
   };
 
-  // Click to autofill demo OTP
-  const handleAutofillDemo = () => {
-    if (!demoOtpHint) return;
-    const chars = demoOtpHint.slice(0, 6).split('');
-    const newDigits = ['', '', '', '', '', ''];
-    chars.forEach((c, idx) => {
-      newDigits[idx] = c;
-    });
-    setDigits(newDigits);
+  // Handle Resend Email
+  const handleResend = async () => {
+    if (resendLoading || resendCooldown > 0) return;
+    setResendLoading(true);
+    setResendMsg(null);
     setError(null);
-    if (inputRefs.current[5]) {
-      inputRefs.current[5].focus();
+    try {
+      const res = await fetch('/resend-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challenge_id: challengeId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || data.reason || 'Failed to resend email');
+      }
+      setResendMsg(data.message || 'OTP resent to registered email!');
+      setResendCooldown(30);
+    } catch (err) {
+      setError(err.message || 'Failed to resend OTP email');
+    } finally {
+      setResendLoading(false);
     }
   };
 
@@ -149,6 +172,12 @@ export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, 
     const s = sec % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
+
+  const emailDisplay = maskedEmail || 'sh****@gmail.com';
+  const isDev = Boolean(
+    (typeof import.meta !== 'undefined' && import.meta?.env?.DEV) ||
+    (typeof process !== 'undefined' && process?.env?.NODE_ENV === 'development')
+  );
 
   return (
     <div className="otp-challenge-card" role="region" aria-label="Step-up OTP Challenge">
@@ -223,23 +252,71 @@ export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, 
           color: #6b7280;
           cursor: not-allowed;
         }
-        .otp-demo-hint {
+        .otp-email-banner {
           background: #1e293b;
-          border: 1px dashed #64748b;
+          border: 1px solid #38bdf8;
+          border-radius: 8px;
+          padding: 10px 14px;
+          font-size: 13px;
+          color: #f1f5f9;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 14px;
+        }
+        .otp-email-text {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          line-height: 1.4;
+        }
+        .otp-mail-icon {
+          font-size: 16px;
+          color: #38bdf8;
+        }
+        .otp-resend-btn {
+          background: #0284c7;
+          border: none;
+          color: #ffffff;
+          padding: 6px 12px;
           border-radius: 6px;
-          padding: 8px 12px;
           font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: background 0.15s;
+        }
+        .otp-resend-btn:hover:not(:disabled) {
+          background: #0369a1;
+        }
+        .otp-resend-btn:disabled {
+          background: #475569;
           color: #94a3b8;
+          cursor: not-allowed;
+        }
+        .otp-resend-status {
+          background: rgba(16, 185, 129, 0.15);
+          border: 1px solid #10b981;
+          color: #6ee7b7;
+          padding: 6px 12px;
+          border-radius: 6px;
+          font-size: 12px;
+          margin-bottom: 12px;
+          text-align: center;
+        }
+        .otp-demo-hint {
+          background: #111827;
+          border: 1px dashed #4b5563;
+          border-radius: 6px;
+          padding: 6px 10px;
+          font-size: 11px;
+          color: #9ca3af;
           display: flex;
           justify-content: space-between;
           align-items: center;
           cursor: pointer;
-          margin-bottom: 16px;
-          transition: background 0.15s;
-        }
-        .otp-demo-hint:hover {
-          background: #273549;
-          border-color: #94a3b8;
+          margin-bottom: 12px;
         }
         .otp-timer-row {
           display: flex;
@@ -320,17 +397,23 @@ export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, 
         High-assurance verification: Enter the 6-digit security code to finalize your authentication. Single-use only.
       </p>
 
-      {/* Demo helper pill */}
-      {demoOtpHint && (
-        <div
-          className="otp-demo-hint"
-          onClick={handleAutofillDemo}
-          title="Click to automatically fill code"
-        >
-          <span>Demo OTP: <strong>{demoOtpHint}</strong></span>
-          <span style={{ textDecoration: 'underline', color: '#60a5fa' }}>Autofill</span>
+      {/* Real Email delivery status banner */}
+      <div className="otp-email-banner">
+        <div className="otp-email-text">
+          <span className="otp-mail-icon">✉</span>
+          <span>6-digit OTP sent to registered email (<strong>{emailDisplay}</strong>)</span>
         </div>
-      )}
+        <button
+          type="button"
+          className="otp-resend-btn"
+          onClick={handleResend}
+          disabled={resendLoading || resendCooldown > 0}
+        >
+          {resendLoading ? 'Sending…' : resendCooldown > 0 ? `Resend (${resendCooldown}s)` : 'Resend Email'}
+        </button>
+      </div>
+
+      {resendMsg && <div className="otp-resend-status">{resendMsg}</div>}
 
       {/* Timer and Expiration info */}
       <div className="otp-timer-row">
@@ -348,15 +431,35 @@ export default function OtpChallengeBox({ challengeId, demoOtpHint, onVerified, 
               type="text"
               inputMode="numeric"
               maxLength={1}
+              placeholder="•"
               value={digit}
               disabled={loading || timeLeft <= 0 || success}
               onChange={(e) => handleChange(idx, e.target.value)}
               onKeyDown={(e) => handleKeyDown(idx, e)}
               className="otp-digit-box"
-              autoComplete="one-time-code"
+              autoComplete="off"
             />
           ))}
         </div>
+
+        {/* Small fallback helper text below inputs ONLY when SMTP delivery failed / blocked */}
+        {demoOtpHint && (
+          <div
+            className="otp-fallback-helper"
+            style={{
+              background: 'rgba(234, 179, 8, 0.12)',
+              border: '1px solid #ca8a04',
+              color: '#fef08a',
+              padding: '6px 10px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              margin: '10px 0 14px 0',
+              textAlign: 'center',
+            }}
+          >
+            Venue Wi-Fi blocked SMTP — Backup Code: <strong style={{ color: '#fff', letterSpacing: '2px' }}>{demoOtpHint}</strong> (type manually)
+          </div>
+        )}
 
         {error && <div className="otp-error">{error}</div>}
         {success && <div className="otp-success">✓ Verified! ALLOW verdict cryptographically signed.</div>}

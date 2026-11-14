@@ -228,3 +228,111 @@ def test_api_verify_request_verification_hook():
     assert "demo_otp" in res
     assert len(res["demo_otp"]) == 6
     assert res["demo_otp"].isdigit()
+    assert "masked_email" in res
+    assert "****" in res["masked_email"]
+
+
+def test_email_masking():
+    """Test email masking utility."""
+    from backend.otp_security import mask_email
+
+    assert mask_email("shivakumar@gmail.com") == "sh****@gmail.com"
+    assert mask_email("alice@company.org") == "al****@company.org"
+    assert mask_email(None) == "sh****@gmail.com"
+    assert mask_email("invalid") == "sh****@gmail.com"
+
+
+def test_send_otp_email_fallback():
+    """Test send_otp_email returns False and logs clean message when SMTP not configured."""
+    from backend.otp_security import send_otp_email
+    import os
+
+    # Ensure SMTP_USER is unset
+    os.environ.pop("SMTP_USER", None)
+    os.environ.pop("SMTP_PASSWORD", None)
+
+    success = send_otp_email("test@example.com", "123456", "u_test")
+    assert success is False
+
+
+def test_store_enrol_email(tmp_path):
+    """Test user enrollment stores email in Store."""
+    from backend.store import Store
+    store = Store(tmp_path)
+    user = store.add_user(name="Alice", embedding=[0.1] * 512, email="alice@example.com")
+    assert user["email"] == "alice@example.com"
+
+    fetched = store.get_user(user["id"])
+    assert fetched["email"] == "alice@example.com"
+
+
+def test_resend_otp_endpoint():
+    """Test POST /resend-otp endpoint."""
+    from backend import main
+    from unittest.mock import MagicMock
+
+    main.challenge_manager.clear()
+    fake_pipe = MagicMock()
+    fake_pipe.store.get_user.return_value = {"id": "u1", "name": "Alice", "email": "alice@test.com"}
+    main.state["pipeline"] = fake_pipe
+
+    chal = main.challenge_manager.create_challenge("u1", 0.70, 85.0, email="alice@test.com")
+    req = main.ResendOtpRequest(challenge_id=chal["challenge_id"])
+
+    res = main.resend_otp(req)
+    assert res["success"] is True
+    assert "al****@test.com" in res["message"]
+    assert res["masked_email"] == "al****@test.com"
+
+
+def test_liveness_ensemble_calibration():
+    """Verify calibrated weights: live face >= 0.88, indoor moire produces 0 penalty, fake < 0.45."""
+    from backend import config, decision
+
+    # 1. Verify primary weights
+    assert config.PASSIVE_WEIGHT >= 0.70
+    assert config.HEURISTIC_WEIGHT <= 0.30
+    assert config.MOIRE_RATIO_LOW >= 18.0
+
+    # 2. Indoor ceiling moire (13.17) must produce 0 penalty
+    indoor_moire = 13.17
+    s_moire = max(0.0, min(1.0, (indoor_moire - config.MOIRE_RATIO_LOW) / (config.MOIRE_RATIO_HIGH - config.MOIRE_RATIO_LOW)))
+    assert s_moire == 0.0
+
+    # 3. Live face with passive=0.9797 under indoor lighting must score >= 0.88
+    passive_live = 0.9797
+    penalty = 0.05
+    live_score = (config.PASSIVE_WEIGHT * passive_live) + (config.HEURISTIC_WEIGHT * (1.0 - penalty))
+    assert live_score >= 0.88
+
+    # 4. Phone screen or print fake must score < 0.45
+    passive_fake = 0.25
+    fake_score = min(passive_fake, (config.PASSIVE_WEIGHT * passive_fake) + (config.HEURISTIC_WEIGHT * 0.7))
+    assert fake_score < 0.45
+
+
+def test_blurry_live_face_routes_to_request_verification():
+    """If image quality is blurry while passive >= 0.85 and similarity >= 90, route to REQUEST_VERIFICATION and trigger OTP."""
+    from backend import decision, otp_security
+
+    liveness = 0.88
+    similarity = 92.0
+    gate_passed = False  # marked blurry by quality gate
+
+    dec, reason = decision.decide(
+        liveness=liveness,
+        similarity=similarity,
+        gate_passed=gate_passed,
+        standing="active",
+        matched=True,
+    )
+
+    # Must route to REQUEST_VERIFICATION instead of DENY
+    assert dec == decision.REQUEST_VERIFICATION
+    assert reason == "Poor image quality"
+
+    # Liveness is >= 0.50 biometric floor, so OTP challenge creation succeeds
+    mgr = otp_security.ChallengeManager()
+    chal = mgr.create_challenge(user_id="alice", liveness_score=liveness, similarity_score=similarity)
+    assert chal["challenge_id"]
+    assert len(chal["otp_code"]) == 6

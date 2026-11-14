@@ -50,19 +50,51 @@ class Store:
     def get_user(self, user_id):
         return next((u for u in self.users() if u["id"] == user_id), None)
 
-    def add_user(self, name, embedding, standing="active"):
+    def _save_aws_metadata(self, user):
+        """Optionally syncs enrolled user metadata to AWS DynamoDB / S3 if configured."""
+        table_name = os.environ.get("DYNAMODB_USERS_TABLE")
+        s3_bucket = os.environ.get("S3_METADATA_BUCKET")
+        if not (table_name or s3_bucket):
+            return
+        try:
+            import boto3
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            if table_name:
+                dynamodb = boto3.resource("dynamodb", region_name=region)
+                table = dynamodb.Table(table_name)
+                table.put_item(Item={
+                    "user_id": user["id"],
+                    "name": user["name"],
+                    "email": user.get("email") or "",
+                    "standing": user["standing"],
+                    "enrolled_at": user["enrolled_at"],
+                })
+            if s3_bucket:
+                s3 = boto3.client("s3", region_name=region)
+                s3.put_object(
+                    Bucket=s3_bucket,
+                    Key=f"users/{user['id']}.json",
+                    Body=json.dumps(user),
+                    ContentType="application/json"
+                )
+        except Exception:
+            pass
+
+    def add_user(self, name, embedding, standing="active", email=None):
         with self._lock:
             users = self.users()
             n = max([int(u["id"].split("_")[1]) for u in users] or [0]) + 1
             user = {
                 "id": f"u_{n:03d}",
                 "name": name,
+                "email": email,
                 "standing": standing,
                 "enrolled_at": now_iso(),
                 "embedding": [round(float(x), 6) for x in embedding],
             }
             users.append(user)
             self._write_json(self.gallery_path, {"users": users})
+            self._save_aws_metadata(user)
             return user
 
     def set_standing(self, user_id, standing):

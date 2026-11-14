@@ -17,6 +17,7 @@ async function loadUsers() {
     <tr>
       <td>${esc(u.id)}</td>
       <td>${esc(u.name)}</td>
+      <td>${esc(u.email || '—')}</td>
       <td><span class="pill"><span class="dot ${u.standing === 'active' ? 'good' : 'bad'}"></span>${esc(u.standing)}</span></td>
       <td style="white-space:nowrap">
         <button class="ghost small" data-act="standing" data-id="${esc(u.id)}"
@@ -24,7 +25,7 @@ async function loadUsers() {
           ${u.standing === 'active' ? 'Suspend' : 'Reinstate'}</button>
         <button class="ghost small" data-act="delete" data-id="${esc(u.id)}" data-name="${esc(u.name)}">Delete</button>
       </td>
-    </tr>`).join('') : '<tr><td colspan="4" class="muted">Nobody is enrolled yet.</td></tr>';
+    </tr>`).join('') : '<tr><td colspan="5" class="muted">Nobody is enrolled yet.</td></tr>';
 }
 
 $('#users').addEventListener('click', async (ev) => {
@@ -45,15 +46,17 @@ $('#users').addEventListener('click', async (ev) => {
 $('#enrol-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const name = $('#name').value.trim();
+  const email = $('#email').value.trim() || null;
   if (!name) return;
   busy = true;
   refreshControls();
   $('#hint').textContent = 'Hold still, look at the camera…';
   try {
     const frames = await captureBurst(video, 5, 2000);
-    const r = await api('/api/enrol', { body: { name, frames } });
-    $('#message').textContent = `Enrolled ${name} as ${r.user_id}.`;
+    const r = await api('/api/enrol', { body: { name, email, frames } });
+    $('#message').textContent = `Enrolled ${name} as ${r.user_id}${email ? ` (${email})` : ''}.`;
     $('#name').value = '';
+    $('#email').value = '';
     await loadUsers();
   } catch (e) {
     $('#message').textContent = `Not enrolled: ${e.message}`;

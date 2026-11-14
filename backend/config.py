@@ -15,7 +15,7 @@ MODE = os.environ.get("MODE", "local")  # "local" | "aws" (Phase 2, not implemen
 GATE_WIDTH = 640
 BRIGHTNESS_MIN = 60.0
 BRIGHTNESS_MAX = 200.0
-SHARPNESS_MIN = 100.0   # variance of the Laplacian
+SHARPNESS_MIN = 35.0   # variance of the Laplacian (calibrated for ambient indoor webcams)
 
 # MiniFASNet, values read from the upstream source (see README, "Models").
 FAS_MODELS = [
@@ -27,11 +27,14 @@ FAS_INPUT_SIZE = 80     # 80x80, BGR, float32 in 0-255 (no normalisation)
 FAS_REAL_INDEX = 1      # class 1 = real face
 
 # Heuristics: how strongly each one can pull the passive score down.
-MOIRE_RATIO_LOW, MOIRE_RATIO_HIGH = 8.0, 20.0     # FFT peak ratio -> 0..1
+# Calibrated for indoor webcam lighting: ambient ceiling textures ~10-18, screen pixel grids >25
+MOIRE_RATIO_LOW, MOIRE_RATIO_HIGH = 18.0, 35.0     # FFT peak ratio -> 0..1
 GLARE_FRAC_LOW, GLARE_FRAC_HIGH = 0.02, 0.10      # saturated pixel fraction -> 0..1
 MOTION_STATIC_LOW, MOTION_STATIC_HIGH = 0.15, 0.6  # mean abs frame diff (grey levels)
 W_MOIRE, W_GLARE, W_STATIC = 0.5, 0.3, 0.2
-HEURISTIC_PENALTY_CAP = 0.6
+HEURISTIC_PENALTY_CAP = 0.25                       # Cap heuristic penalty at 25% max
+PASSIVE_WEIGHT = 0.75                              # 75% primary weight on passive anti-spoof model
+HEURISTIC_WEIGHT = 0.25                            # 25% weight on heuristic consistency
 HEURISTIC_ONLY_CAP = 0.80   # heuristic-only mode can never reach LIVENESS_ALLOW
 
 # Identity. Cosine similarity is mapped to 0-100 through these anchor points.

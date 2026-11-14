@@ -15,7 +15,7 @@ import logging
 import cv2
 import numpy as np
 
-from . import config
+from . import config, decision
 from .identity import align_face
 
 log = logging.getLogger("spoof.liveness")
@@ -166,7 +166,45 @@ class LivenessEngine:
             passive = float(np.median(per_frame))
             signals["passive"] = round(passive, 4)
             signals["passive_per_frame"] = [round(p, 4) for p in per_frame]
-            liveness = passive * (1.0 - penalty)
+
+            # Primary weight (75%) on MiniFASNet passive anti-spoof model
+            w_passive = getattr(config, "PASSIVE_WEIGHT", 0.75)
+            w_heuristic = getattr(config, "HEURISTIC_WEIGHT", 0.25)
+            h_score = 1.0 - penalty
+
+            # Weighted ensemble combination
+            raw_ensemble = (w_passive * passive) + (w_heuristic * h_score)
+
+            # Safety bounds:
+            # 1. Definite spoofs (passive < 0.40) must never be elevated above 0.40 by heuristics
+            # 2. Genuine live faces (passive >= 0.85) must not be crushed below 0.70 by mild blur or lighting
+            if passive < getattr(decision, "LIVENESS_DENY", 0.40):
+                liveness = min(passive, raw_ensemble)
+            elif passive >= getattr(decision, "LIVENESS_ALLOW", 0.85):
+                liveness = max(0.70, min(1.0, raw_ensemble))
+            else:
+                liveness = raw_ensemble
+
+            sub_scores = {
+                "w_passive": w_passive,
+                "w_heuristic": w_heuristic,
+                "passive_score": round(passive, 4),
+                "heuristic_score": round(h_score, 4),
+                "s_moire": round(s_moire, 4),
+                "s_glare": round(s_glare, 4),
+                "s_static": round(s_static, 4),
+                "penalty": round(penalty, 4),
+                "raw_ensemble": round(raw_ensemble, 4),
+                "final_liveness": round(liveness, 4),
+            }
+            signals["sub_scores"] = sub_scores
+
+            log.info(
+                "[LIVENESS ENSEMBLE] final=%.4f (passive=%.4f * %.2f + heuristic=%.4f * %.2f) | "
+                "moire=%.2f (s=%.3f), glare=%.4f (s=%.3f), motion=%s (s=%.3f), penalty=%.3f",
+                liveness, passive, w_passive, h_score, w_heuristic,
+                moire, s_moire, glare, s_glare, signals["motion"], s_static, penalty
+            )
         else:
             liveness = min(config.HEURISTIC_ONLY_CAP,
                            1.0 - min(1.0, penalty / config.HEURISTIC_PENALTY_CAP))

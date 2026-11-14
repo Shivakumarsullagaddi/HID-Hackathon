@@ -6,6 +6,11 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [error, setError] = useState(null);
+  const [showEnroll, setShowEnroll] = useState(false);
+  const [enrolName, setEnrolName] = useState('');
+  const [enrolEmail, setEnrolEmail] = useState('');
+  const [enrolLoading, setEnrolLoading] = useState(false);
+  const [enrolMsg, setEnrolMsg] = useState(null);
   const videoRef = useRef(null);
 
   // Initialize webcam
@@ -70,14 +75,92 @@ export default function App() {
     }
   };
 
+  // Handle enrollment with email
+  const handleEnroll = async (e) => {
+    e.preventDefault();
+    if (!enrolName.trim()) return;
+    setEnrolLoading(true);
+    setEnrolMsg(null);
+    try {
+      const frames = captureBurst(5);
+      const res = await fetch('/api/enrol', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: enrolName.trim(),
+          email: enrolEmail.trim() || null,
+          frames,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.reason || 'Enrollment failed');
+      setEnrolMsg(`Successfully enrolled ${enrolName} (${data.user_id})!`);
+      setEnrolName('');
+      setEnrolEmail('');
+    } catch (err) {
+      setEnrolMsg(`Error: ${err.message}`);
+    } finally {
+      setEnrolLoading(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 24, fontFamily: 'sans-serif', color: '#e2e8f0' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, margin: 0 }}>Spot-a-Spoof Kiosk</h1>
-        <span style={{ fontSize: 13, background: '#1e293b', padding: '4px 10px', borderRadius: 4 }}>
-          Security Hardened
-        </span>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button
+            onClick={() => setShowEnroll(!showEnroll)}
+            style={{
+              background: '#0284c7',
+              color: '#fff',
+              border: 'none',
+              padding: '6px 14px',
+              borderRadius: 6,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {showEnroll ? 'Close Enrollment' : '+ Enroll User'}
+          </button>
+          <span style={{ fontSize: 13, background: '#1e293b', padding: '4px 10px', borderRadius: 4 }}>
+            Security Hardened
+          </span>
+        </div>
       </header>
+
+      {/* Enrollment Modal / Drawer */}
+      {showEnroll && (
+        <div style={{ background: '#1e293b', border: '1px solid #38bdf8', padding: 16, borderRadius: 8, marginBottom: 20 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 16, color: '#38bdf8' }}>Register New User (Face + Email)</h3>
+          <form onSubmit={handleEnroll} style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              placeholder="Full Name"
+              value={enrolName}
+              onChange={(e) => setEnrolName(e.target.value)}
+              required
+              style={{ flex: 1, minWidth: 150, padding: 8, borderRadius: 6, background: '#0f172a', border: '1px solid #475569', color: '#fff' }}
+            />
+            <input
+              type="email"
+              placeholder="Registered Email (for OTP delivery)"
+              value={enrolEmail}
+              onChange={(e) => setEnrolEmail(e.target.value)}
+              style={{ flex: 1, minWidth: 200, padding: 8, borderRadius: 6, background: '#0f172a', border: '1px solid #475569', color: '#fff' }}
+            />
+            <button
+              type="submit"
+              disabled={enrolLoading || !cameraActive}
+              style={{ padding: '8px 16px', background: '#10b981', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 600, cursor: 'pointer' }}
+            >
+              {enrolLoading ? 'Enrolling…' : 'Capture & Enroll'}
+            </button>
+          </form>
+          {enrolMsg && <p style={{ margin: '10px 0 0 0', fontSize: 13, color: enrolMsg.startsWith('Error') ? '#f87171' : '#6ee7b7' }}>{enrolMsg}</p>}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
         {/* Camera feed */}
@@ -130,14 +213,25 @@ export default function App() {
             </div>
           )}
 
-          {/* Minimal 5-line integration for REQUEST_VERIFICATION state */}
-          {result?.decision === 'REQUEST_VERIFICATION' && result?.challenge_id && (
-            <OtpChallengeBox
-              challengeId={result.challenge_id}
-              demoOtpHint={result.demo_otp}
-              onVerified={(verdict) => setResult(verdict)}
-              onCancel={() => setResult(null)}
-            />
+          {/* REQUEST_VERIFICATION state: renders OtpChallengeBox above Blink check */}
+          {result?.decision === 'REQUEST_VERIFICATION' && (
+            <div>
+              {result.challenge_id && (
+                <OtpChallengeBox
+                  challengeId={result.challenge_id}
+                  demoOtpHint={result.demo_otp}
+                  maskedEmail={result.masked_email}
+                  onVerified={(verdict) => setResult(verdict)}
+                  onCancel={() => setResult(null)}
+                />
+              )}
+              <div style={{ marginTop: 14, background: '#1e293b', padding: 14, borderRadius: 8, border: '1px solid #334155' }}>
+                <h4 style={{ margin: '0 0 6px 0', fontSize: 13, color: '#f1f5f9' }}>Alternative: Extra check: blink</h4>
+                <p style={{ margin: '0 0 10px 0', fontSize: 12, color: '#94a3b8' }}>
+                  If you cannot access your registered email, blink twice slowly while looking at the camera.
+                </p>
+              </div>
+            </div>
           )}
 
           {!result && !loading && (

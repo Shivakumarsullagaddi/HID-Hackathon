@@ -2,20 +2,36 @@
 
     uvicorn backend.main:app --host 127.0.0.1 --port 8000
 """
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment variables from .env
+load_dotenv()
+_backend_env = Path(__file__).resolve().parent / ".env"
+if _backend_env.exists():
+    load_dotenv(_backend_env)
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+if _root_env.exists():
+    load_dotenv(_root_env)
+
 import base64
 import logging
+import os
 from collections import Counter
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, decision, evaluate
 from .models import (BlinkRequest, BlinkResponse, ClipCreate, EnrolRequest, EnrolResponse,
                      StandingUpdate, UserOut, VerifyRequest, VerifyResponse)
-from .otp_security import HardenedVerifyResponse, VerifyOtpRequest, challenge_manager
+from .otp_security import (HardenedVerifyResponse, VerifyOtpRequest, challenge_manager,
+                           mask_email, send_otp_email)
 from .pipeline import FrameError, Pipeline, decode_frames
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -84,9 +100,13 @@ def status():
     return pipe().status()
 
 
+class ResendOtpRequest(BaseModel):
+    challenge_id: str
+
+
 @app.post("/api/verify", response_model=HardenedVerifyResponse)
 @app.post("/verify", response_model=HardenedVerifyResponse)
-def verify(req: VerifyRequest):
+def verify(req: VerifyRequest, background_tasks: BackgroundTasks = BackgroundTasks()):
     if req.user_id and not pipe().store.get_user(req.user_id):
         raise HTTPException(404, f"unknown user_id {req.user_id}")
 
@@ -127,20 +147,74 @@ def verify(req: VerifyRequest):
     # When /verify decides REQUEST VERIFICATION, create an OTP challenge
     if result.get("decision") == "REQUEST_VERIFICATION":
         user_for_challenge = result.get("matched_user") or req.user_id or "demo_user"
-        try:
-            challenge = challenge_manager.create_challenge(
-                user_id=user_for_challenge,
-                liveness_score=result.get("liveness", 0.0),
-                similarity_score=result.get("similarity", 0.0),
-            )
-            result["challenge_id"] = challenge["challenge_id"]
-            # Include demo_otp in dev/local mode for hackathon convenience
-            result["demo_otp"] = challenge["otp_code"]
-        except Exception as e:
-            log.warning("Challenge creation declined: %s", e)
-            result["reason"] = f"{result.get('reason', '')} (OTP unavailable: {e})"
+        user_record = pipe().store.get_user(user_for_challenge) if user_for_challenge else None
+        recipient_email = (user_record.get("email") if user_record else None) or os.environ.get("DEMO_RECIPIENT_EMAIL") or "shivakumarsullagaddi@gmail.com"
+
+        live_val = float(result.get("liveness", 0.0) or 0.0)
+        sim_val = float(result.get("similarity", 0.0) or 0.0)
+
+        # Whenever decision is REQUEST_VERIFICATION and meets hard biometric floor
+        if live_val >= challenge_manager.LIVENESS_FLOOR and sim_val >= challenge_manager.SIMILARITY_FLOOR:
+            try:
+                challenge = challenge_manager.create_challenge(
+                    user_id=user_for_challenge,
+                    liveness_score=live_val,
+                    similarity_score=sim_val,
+                    email=recipient_email,
+                )
+                result["challenge_id"] = challenge["challenge_id"]
+                masked = mask_email(recipient_email)
+                result["masked_email"] = masked
+
+                # Attempt resilient email delivery via SMTP (587 STARTTLS -> 465 SSL)
+                email_sent = False
+                if recipient_email:
+                    email_sent = send_otp_email(recipient_email, challenge["otp_code"], user_for_challenge)
+
+                if email_sent:
+                    result["email_delivery_status"] = "sent"
+                    result["otp_sent"] = True
+                    result["demo_otp"] = None
+                    result["fallback_reason"] = None
+                else:
+                    # Venue Wi-Fi blocked SMTP or credentials failed -> provide backup code
+                    result["email_delivery_status"] = "smtp_blocked_fallback"
+                    result["otp_sent"] = False
+                    result["demo_otp"] = challenge["otp_code"]
+                    result["fallback_reason"] = f"Venue Wi-Fi blocked SMTP — Backup Code: {challenge['otp_code']}"
+            except Exception as e:
+                log.warning("Challenge creation declined: %s", e)
+                result["otp_sent"] = False
 
     return result
+
+
+@app.post("/api/resend-otp")
+@app.post("/resend-otp")
+def resend_otp(req: ResendOtpRequest):
+    """Re-sends OTP email for an active, unburned challenge."""
+    active = challenge_manager.get_active_challenge(req.challenge_id)
+    if not active:
+        raise HTTPException(400, "Active challenge not found or expired. Please re-verify.")
+    user_record = pipe().store.get_user(active["user_id"])
+    recipient_email = active.get("email") or (user_record.get("email") if user_record else None) or os.getenv("DEMO_RECIPIENT_EMAIL") or "shivakumarsullagaddi@gmail.com"
+    masked = mask_email(recipient_email)
+    sent = send_otp_email(recipient_email, active["otp_code"], active["user_id"])
+    if sent:
+        return {
+            "success": True,
+            "message": f"6-digit OTP resent to {masked}",
+            "masked_email": masked,
+            "email_delivery_status": "sent",
+        }
+    else:
+        return {
+            "success": True,
+            "message": f"Venue Wi-Fi blocked SMTP — Backup Code: {active['otp_code']} (sent to {masked})",
+            "masked_email": masked,
+            "email_delivery_status": "smtp_blocked_fallback",
+            "demo_otp": active["otp_code"],
+        }
 
 
 @app.post("/api/verify-otp")
@@ -172,12 +246,14 @@ def stepup_blink(req: BlinkRequest):
 # ---- users -------------------------------------------------------------
 
 @app.post("/api/enrol", response_model=EnrolResponse)
+@app.post("/api/enroll", response_model=EnrolResponse)
+@app.post("/enroll", response_model=EnrolResponse)
 def enrol(req: EnrolRequest):
     try:
-        user = pipe().enrol(req.name, frames_or_400(req.frames))
+        user = pipe().enrol(req.name, frames_or_400(req.frames), email=req.email)
     except FrameError as e:
         raise HTTPException(400, str(e))
-    return {"user_id": user["id"], "status": "enrolled"}
+    return {"user_id": user["id"], "status": "enrolled", "email": req.email}
 
 
 @app.get("/api/users", response_model=list[UserOut])

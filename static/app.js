@@ -1,12 +1,16 @@
-// Kiosk page: camera, face guide, Verify, result card, blink step-up.
+// Kiosk page: camera, face guide, Verify, result card, blink step-up, OTP challenge.
 const video = $('#video');
 const verifyBtn = $('#verify');
 const resultCard = $('#result');
 const stepup = $('#stepup');
+const otpCard = $('#otp-challenge');
 let gate = { available: false, ready: false, hint: '' };
 let busy = false;
 let cameraOn = false;
 let pendingRequestId = null;
+let currentChallengeId = null;
+let otpTimerInterval = null;
+let otpSecondsLeft = 60;
 
 function refreshControls() {
   verifyBtn.disabled = busy || !cameraOn || !gate.ready;
@@ -44,7 +48,10 @@ function renderError(message) {
 verifyBtn.addEventListener('click', async () => {
   busy = true;
   stepup.hidden = true;
+  if (otpCard) otpCard.hidden = true;
+  if (otpTimerInterval) clearInterval(otpTimerInterval);
   pendingRequestId = null;
+  currentChallengeId = null;
   refreshControls();
   $('#hint').textContent = 'Hold still…';
   const t0 = performance.now();
@@ -57,6 +64,50 @@ verifyBtn.addEventListener('click', async () => {
       pendingRequestId = r.request_id;
       $('#blink-status').textContent = '';
       stepup.hidden = false;
+
+      // If OTP challenge created, show OTP card immediately above blink
+      if (r.challenge_id && otpCard) {
+        currentChallengeId = r.challenge_id;
+        $('#otp-masked-email').textContent = r.masked_email || 'registered email';
+        $('#otp-cid').textContent = r.challenge_id.slice(0, 8);
+
+        // Ensure OTP input starts completely empty and gets auto-focused
+        const otpInput = $('#otp-input');
+        if (otpInput) {
+          otpInput.value = '';
+          setTimeout(() => otpInput.focus(), 50);
+        }
+
+        const statusMsg = $('#otp-status-msg');
+        // Show small fallback text below input ONLY if SMTP failed/blocked
+        if (r.email_delivery_status === 'smtp_blocked_fallback' && r.demo_otp) {
+          statusMsg.style.display = 'block';
+          statusMsg.style.background = 'rgba(234, 179, 8, 0.15)';
+          statusMsg.style.border = '1px solid #eab308';
+          statusMsg.style.color = '#fde047';
+          statusMsg.style.padding = '8px 12px';
+          statusMsg.style.borderRadius = '6px';
+          statusMsg.textContent = `Venue Wi-Fi blocked SMTP — Backup Code: ${r.demo_otp}`;
+        } else {
+          statusMsg.style.display = 'none';
+          statusMsg.textContent = '';
+        }
+        otpCard.hidden = false;
+
+        otpSecondsLeft = 60;
+        $('#otp-timer').textContent = `${otpSecondsLeft}s`;
+        $('#otp-timer').style.color = '#10b981';
+        otpTimerInterval = setInterval(() => {
+          otpSecondsLeft--;
+          if (otpSecondsLeft <= 0) {
+            clearInterval(otpTimerInterval);
+            $('#otp-timer').textContent = 'Expired';
+            $('#otp-timer').style.color = '#ef4444';
+          } else {
+            $('#otp-timer').textContent = `${otpSecondsLeft}s`;
+          }
+        }, 1000);
+      }
     }
   } catch (e) {
     renderError(e.message);
@@ -93,6 +144,94 @@ $('#blink-start').addEventListener('click', async () => {
   busy = false;
   refreshControls();
 });
+
+// OTP Step-Up verification handlers
+if ($('#otp-verify-btn')) {
+  $('#otp-verify-btn').addEventListener('click', async () => {
+    const code = $('#otp-input').value.trim();
+    if (!code || !currentChallengeId) return;
+    const statusMsg = $('#otp-status-msg');
+    statusMsg.style.display = 'none';
+    $('#otp-verify-btn').disabled = true;
+    $('#otp-verify-btn').textContent = 'Verifying...';
+    try {
+      const res = await api('/verify-otp', {
+        body: { challenge_id: currentChallengeId, otp: code }
+      });
+      if (res.decision === 'ALLOW') {
+        renderResult({
+          decision: 'ALLOW',
+          reason: 'OTP verified successfully: Identity confirmed',
+          liveness: 1.0,
+          similarity: 100.0,
+          matched_name: res.user_id,
+          matched_user: res.user_id,
+          latency_ms: 0,
+          gate_passed: true,
+          liveness_mode: 'mfa-otp',
+          request_id: currentChallengeId,
+        }, 0);
+        if (otpCard) otpCard.hidden = true;
+        stepup.hidden = true;
+        if (otpTimerInterval) clearInterval(otpTimerInterval);
+      } else {
+        statusMsg.style.display = 'block';
+        statusMsg.style.color = '#ef4444';
+        statusMsg.textContent = res.reason || 'Invalid OTP code';
+      }
+    } catch (err) {
+      statusMsg.style.display = 'block';
+      statusMsg.style.color = '#ef4444';
+      statusMsg.textContent = err.message || 'OTP Verification failed';
+    } finally {
+      $('#otp-verify-btn').disabled = false;
+      $('#otp-verify-btn').textContent = 'Verify OTP';
+    }
+  });
+}
+
+if ($('#otp-resend-btn')) {
+  $('#otp-resend-btn').addEventListener('click', async () => {
+    if (!currentChallengeId) return;
+    const btn = $('#otp-resend-btn');
+    const statusMsg = $('#otp-status-msg');
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    try {
+      const res = await api('/resend-otp', { body: { challenge_id: currentChallengeId } });
+      statusMsg.style.display = 'block';
+      if (res.email_delivery_status === 'smtp_blocked_fallback' && res.demo_otp) {
+        statusMsg.style.background = 'rgba(234, 179, 8, 0.15)';
+        statusMsg.style.border = '1px solid #eab308';
+        statusMsg.style.color = '#fde047';
+        statusMsg.style.padding = '8px 12px';
+        statusMsg.style.borderRadius = '6px';
+        statusMsg.textContent = res.message || `Venue Wi-Fi blocked SMTP — Backup Code: ${res.demo_otp}`;
+        // Input remains completely untouched - user types code manually
+      } else {
+        statusMsg.style.background = 'rgba(16, 185, 129, 0.15)';
+        statusMsg.style.border = '1px solid #10b981';
+        statusMsg.style.color = '#6ee7b7';
+        statusMsg.style.padding = '8px 12px';
+        statusMsg.style.borderRadius = '6px';
+        statusMsg.textContent = res.message || 'OTP resent!';
+      }
+    } catch (err) {
+      statusMsg.style.display = 'block';
+      statusMsg.style.background = 'rgba(239, 68, 68, 0.15)';
+      statusMsg.style.border = '1px solid #ef4444';
+      statusMsg.style.color = '#fca5a5';
+      statusMsg.style.padding = '8px 12px';
+      statusMsg.style.borderRadius = '6px';
+      statusMsg.textContent = err.message || 'Failed to resend';
+    } finally {
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = 'Resend Email';
+      }, 5000);
+    }
+  });
+}
 
 (async () => {
   showStatus();
