@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+*.env
+.aws/
+models/**/*.onnx
+data/decisions.jsonl
+data/lab/*
+!data/lab/.gitkeep
