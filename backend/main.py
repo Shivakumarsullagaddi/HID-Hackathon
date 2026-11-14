@@ -236,7 +236,7 @@ def metrics():
     store = pipe().store
     kiosk = [r for r in store.read_decisions() if r.get("source") == "kiosk"]
     first = [r for r in kiosk if r.get("stage") == "verify"]
-    lat = [r["latency_ms"] for r in first if r.get("latency_ms") is not None]
+    lat = [float(r["latency_ms"]) for r in first if r.get("latency_ms") is not None]
     return {
         "status": pipe().status(),
         "thresholds": {
@@ -250,7 +250,7 @@ def metrics():
             "n": len(first),
             "decisions": dict(Counter(r.get("decision", "UNKNOWN") for r in first)),
             "stepups": dict(Counter(r.get("decision", "UNKNOWN") for r in kiosk if r.get("stage") == "stepup")),
-            "liveness_modes": dict(Counter(r.get("liveness_mode", "offline" if r.get("offline_mode") else "unknown") for r in first)),
+            "liveness_modes": dict(Counter(r.get("liveness_mode", "offline_scrubbed" if r.get("offline_mode") else "unknown") for r in first)),
             "p50_ms": round(float(np.percentile(lat, 50)), 1) if lat else None,
             "p95_ms": round(float(np.percentile(lat, 95)), 1) if lat else None,
         },

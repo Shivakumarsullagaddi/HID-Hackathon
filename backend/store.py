@@ -137,10 +137,10 @@ class Store:
             "schedule_status": record.get("schedule_status", "ALLOW"),
             "gate_passed": record.get("gate_passed"),
             "offline_mode": True,
+            "liveness_mode": record.get("liveness_mode", "offline_scrubbed"),
             "biometrics_scrubbed": True,
             "integrity_hash": integrity_hash,
             "latency_ms": record.get("latency_ms"),
-            "liveness_mode": record.get("liveness_mode", "offline"),
         }
 
     def append_offline_decision(self, record: dict) -> dict:

@@ -306,3 +306,14 @@ def test_end_to_end_context_aware_and_offline(client, imgs):
     assert "kiosk_log" in m_body
     assert "liveness_modes" in m_body["kiosk_log"]
     assert m_body["kiosk_log"]["n"] >= 1
+
+    # Ensure /api/metrics handles records with missing liveness_mode and latency_ms gracefully
+    main.state["pipeline"].store.append_decision({
+        "stage": "verify",
+        "source": "kiosk",
+        "decision": "ALLOW",
+        "offline_mode": True,
+    })
+    m2 = client.get("/api/metrics")
+    assert m2.status_code == 200
+    assert "offline_scrubbed" in m2.json()["kiosk_log"]["liveness_modes"]

@@ -139,4 +139,7 @@ $('#run').addEventListener('click', async () => {
 });
 
 showStatus();
-load().catch((e) => { $('#conditions').textContent = e.message; });
+load().catch((e) => {
+  console.error('Failed to load metrics:', e);
+  $('#conditions').textContent = 'Unable to load metrics at this time.';
+});
