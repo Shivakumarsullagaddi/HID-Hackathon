@@ -1,11 +1,14 @@
 """File storage: gallery (JSON), decision log (JSON Lines), lab clips and
 expected decisions. No database in Phase 1."""
+import hashlib
 import json
 import os
 import re
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from . import config
 
@@ -27,6 +30,7 @@ class Store:
         self.decisions_path = self.dir / "decisions.jsonl"
         self.expected_path = self.dir / "expected.json"
         self.metrics_path = self.dir / "metrics.json"
+        self.offline_queue_path = self.dir / "offline_queue.jsonl"
         self._lock = threading.RLock()
 
     # ---- helpers -------------------------------------------------------
@@ -45,12 +49,16 @@ class Store:
     # ---- gallery -------------------------------------------------------
     def users(self):
         with self._lock:
-            return self._read_json(self.gallery_path, {"users": []})["users"]
+            users = self._read_json(self.gallery_path, {"users": []})["users"]
+            for u in users:
+                if "role" not in u:
+                    u["role"] = None
+            return users
 
     def get_user(self, user_id):
         return next((u for u in self.users() if u["id"] == user_id), None)
 
-    def add_user(self, name, embedding, standing="active"):
+    def add_user(self, name, embedding, standing="active", role=None):
         with self._lock:
             users = self.users()
             n = max([int(u["id"].split("_")[1]) for u in users] or [0]) + 1
@@ -58,6 +66,7 @@ class Store:
                 "id": f"u_{n:03d}",
                 "name": name,
                 "standing": standing,
+                "role": role,
                 "enrolled_at": now_iso(),
                 "embedding": [round(float(x), 6) for x in embedding],
             }
@@ -65,15 +74,21 @@ class Store:
             self._write_json(self.gallery_path, {"users": users})
             return user
 
-    def set_standing(self, user_id, standing):
+    def update_user(self, user_id, standing=None, role=None):
         with self._lock:
             users = self.users()
             for u in users:
                 if u["id"] == user_id:
-                    u["standing"] = standing
+                    if standing is not None:
+                        u["standing"] = standing
+                    if role is not None:
+                        u["role"] = role
                     self._write_json(self.gallery_path, {"users": users})
                     return u
             return None
+
+    def set_standing(self, user_id, standing):
+        return self.update_user(user_id, standing=standing)
 
     def delete_user(self, user_id):
         with self._lock:
@@ -100,6 +115,68 @@ class Store:
                 if line:
                     out.append(json.loads(line))
         return out
+
+    # ---- offline fail-safe queue & biometrics scrubbing ----------------
+    @staticmethod
+    def scrub_biometrics(record: dict) -> dict:
+        raw_key_material = f"{record.get('ts')}|{record.get('request_id')}|{record.get('matched_user')}|{record.get('decision')}|{record.get('stage')}"
+        integrity_hash = hashlib.sha256(raw_key_material.encode("utf-8")).hexdigest()
+        return {
+            "event_id": uuid.uuid4().hex,
+            "ts": record.get("ts"),
+            "request_id": record.get("request_id"),
+            "stage": record.get("stage", "verify"),
+            "source": record.get("source", "kiosk"),
+            "decision": record.get("decision"),
+            "reason": record.get("reason"),
+            "matched_user": record.get("matched_user"),
+            "standing": record.get("standing"),
+            "role": record.get("role", config.DEFAULT_ROLE),
+            "zone": record.get("zone", config.DEFAULT_ZONE),
+            "access_hour": record.get("access_hour"),
+            "schedule_status": record.get("schedule_status", "ALLOW"),
+            "gate_passed": record.get("gate_passed"),
+            "offline_mode": True,
+            "biometrics_scrubbed": True,
+            "integrity_hash": integrity_hash,
+            "latency_ms": record.get("latency_ms"),
+        }
+
+    def append_offline_decision(self, record: dict) -> dict:
+        scrubbed = self.scrub_biometrics(record)
+        with self._lock:
+            with open(self.offline_queue_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(scrubbed) + "\n")
+        return scrubbed
+
+    def read_offline_queue(self) -> list[dict]:
+        with self._lock:
+            if not self.offline_queue_path.exists():
+                return []
+            out = []
+            with open(self.offline_queue_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        out.append(json.loads(line))
+            return out
+
+    def sync_offline_to_central(self) -> dict:
+        with self._lock:
+            queued = self.read_offline_queue()
+            if not queued:
+                return {"synced_count": 0, "remaining_queue": 0, "synced_at": None}
+            synced_ts = now_iso()
+            with open(self.decisions_path, "a", encoding="utf-8") as f:
+                for item in queued:
+                    entry = {**item, "synced_from_offline": True, "synced_at": synced_ts}
+                    f.write(json.dumps(entry) + "\n")
+            tmp = self.offline_queue_path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                pass
+            os.replace(tmp, self.offline_queue_path)
+            return {"synced_count": len(queued), "remaining_queue": 0, "synced_at": synced_ts}
+
 
     # ---- lab clips -----------------------------------------------------
     def expected(self):

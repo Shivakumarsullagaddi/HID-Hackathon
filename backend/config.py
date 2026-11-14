@@ -48,3 +48,34 @@ STEPUP_TTL_S = 120
 MAX_FRAME_B64_CHARS = 4_000_000
 SPOOF_TYPES = ["print", "screen", "video", "mask"]
 CLIP_TYPES = ["live"] + SPOOF_TYPES + ["poor_quality"]
+
+# Context-Aware Access Control & Offline Fail-Safe Constants
+DEFAULT_ROLE = "student"
+DEFAULT_ZONE = "main_gate"
+OFFLINE_LIVENESS_ALLOW = 0.90
+CAMPUS_ROLES = ("student", "faculty", "contractor", "security_admin")
+CAMPUS_ZONES = ("main_gate", "research_lab", "server_room")
+
+CAMPUS_SCHEDULES = {
+    "student": {
+        "main_gate":    {"allow_hours": [(7, 20)], "stepup_hours": [(20, 22)]},
+        "research_lab": {"allow_hours": [(8, 18)], "stepup_hours": [(18, 22)]},
+        "server_room":  {"allow_hours": [],        "stepup_hours": []},
+    },
+    "faculty": {
+        "main_gate":    {"allow_hours": [(6, 22)], "stepup_hours": [(22, 24), (0, 6)]},
+        "research_lab": {"allow_hours": [(6, 21)], "stepup_hours": [(21, 24)]},
+        "server_room":  {"allow_hours": [],        "stepup_hours": [(8, 20)]},
+    },
+    "contractor": {
+        "main_gate":    {"allow_hours": [(9, 17)], "stepup_hours": [(17, 19)]},
+        "research_lab": {"allow_hours": [],        "stepup_hours": [(9, 17)]},
+        "server_room":  {"allow_hours": [],        "stepup_hours": [(10, 16)]},
+    },
+    "security_admin": {
+        "main_gate":    {"allow_hours": [(0, 24)], "stepup_hours": []},
+        "research_lab": {"allow_hours": [(0, 24)], "stepup_hours": []},
+        "server_room":  {"allow_hours": [(8, 20)], "stepup_hours": [(20, 24), (0, 8)]},
+    },
+}
+

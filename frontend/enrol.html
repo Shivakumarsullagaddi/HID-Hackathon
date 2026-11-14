@@ -26,6 +26,12 @@
         </div>
         <form id="enrol-form" class="row">
           <input id="name" placeholder="Full name" maxlength="60" required style="flex:1">
+          <select id="role-select" style="min-width:130px;">
+            <option value="student">Student</option>
+            <option value="faculty">Faculty</option>
+            <option value="contractor">Contractor</option>
+            <option value="security_admin">Security Admin</option>
+          </select>
           <button id="enrol" disabled>Capture and enrol</button>
         </form>
         <p id="message" class="sub" style="margin-top:12px">Five frames are taken over two seconds.
@@ -35,7 +41,7 @@
         <h2>Enrolled users</h2>
         <div class="scroll">
           <table>
-            <thead><tr><th>ID</th><th>Name</th><th>Standing</th><th></th></tr></thead>
+            <thead><tr><th>ID</th><th>Name</th><th>Role</th><th>Standing</th><th></th></tr></thead>
             <tbody id="users"></tbody>
           </table>
         </div>

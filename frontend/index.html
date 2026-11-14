@@ -17,6 +17,42 @@
   </header>
   <main>
     <div id="status-banner" class="banner" hidden></div>
+    <div id="sync-banner" class="banner good" hidden></div>
+
+    <div class="control-bar card">
+      <div class="control-group">
+        <label for="zone-select">Campus Zone</label>
+        <select id="zone-select">
+          <option value="main_gate">Main Campus Gate</option>
+          <option value="research_lab">Research Lab</option>
+          <option value="server_room">High-Sec Server Room</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label for="hour-select">Schedule Time</label>
+        <select id="hour-select">
+          <option value="">Live System Clock</option>
+          <option value="10">10:00 AM — Standard Hours (ALLOW)</option>
+          <option value="20">08:00 PM — Extended Hours (STEP-UP)</option>
+          <option value="2">02:00 AM — Campus Curfew (DENY)</option>
+        </select>
+      </div>
+      <div class="control-group" style="margin-left:auto;display:flex;align-items:center;gap:10px;">
+        <button id="connectivity-btn" class="conn-btn conn-online" type="button">Central Server: ONLINE</button>
+        <button id="offline-queue-btn" class="ghost small" type="button" title="View scrubbed offline queue">
+          <span id="offline-queue-badge">Cached Offline: 0 (0 Biometrics)</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="queue-drawer" class="card" hidden style="margin-bottom:16px;">
+      <div class="row" style="margin:0 0 10px;justify-content:space-between;">
+        <h3 style="margin:0;font-size:15px;">Offline Fail-Safe Local Audit Queue (Zero Raw Biometrics)</h3>
+        <button id="close-queue-drawer" class="ghost small" type="button">Close</button>
+      </div>
+      <pre id="queue-content" style="max-height:180px;overflow:auto;background:var(--surface-2);padding:10px;border-radius:6px;font-size:12px;margin:0;"></pre>
+    </div>
+
     <div class="grid">
       <section>
         <div class="stage">
