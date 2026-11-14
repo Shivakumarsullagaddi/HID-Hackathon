@@ -15,7 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from . import config, decision, evaluate
 from .models import (BlinkRequest, BlinkResponse, ClipCreate, EnrolRequest, EnrolResponse,
                      StandingUpdate, UserOut, VerifyRequest, VerifyResponse)
+from .db import kiosk_startup
 from .pipeline import FrameError, Pipeline, decode_frames
+from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("spoof.main")
@@ -28,7 +30,10 @@ async def lifespan(app):
     if config.MODE != "local":
         log.warning("MODE=%s requested but only local mode is implemented; using local.",
                     config.MODE)
-    state["pipeline"] = Pipeline()
+    # Back up data/kiosk.db, then upgrade it. On failure the backup is restored
+    # and the kiosk starts LOCKED (see state.py).
+    state["db_error"] = kiosk_startup(config.KIOSK_DB_PATH)
+    state["pipeline"] = Pipeline(Store(migrate=False))
     log.info("pipeline ready: %s", state["pipeline"].status())
     yield
 

@@ -1,13 +1,30 @@
-"""File storage: gallery (JSON), decision log (JSON Lines), lab clips and
-expected decisions. No database in Phase 1."""
+"""Kiosk storage.
+
+Product data lives in SQLite (data/kiosk.db, see kiosk_models.py):
+users and templates (snapshot cache), schedule, snapshot metadata, the
+decision outbox and the local decision log. Lab clips, expected.json and
+metrics.json stay as files: they are test tooling, not product data.
+
+The public methods of the old JSON store are unchanged (users, get_user,
+add_user, set_standing, delete_user, append_decision, read_decisions, and
+the lab/metrics methods). Users and templates are cached in memory and
+reloaded whenever the tables change, so matching does not touch SQLite.
+"""
 import json
 import os
 import re
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import sessionmaker
+
 from . import config
+from .db import make_engine, sqlite_url, upgrade
+from .kiosk_models import DecisionLog, DecisionOutbox, Template, UserCache
 
 
 def now_iso():
@@ -18,23 +35,53 @@ def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "x"
 
 
+def embedding_to_blob(embedding):
+    arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+    if arr.size != config.EMBEDDING_DIM:
+        raise ValueError(f"embedding has {arr.size} values, expected {config.EMBEDDING_DIM}")
+    return arr.tobytes()
+
+
+def blob_to_embedding(blob):
+    return np.frombuffer(blob, dtype=np.float32).copy()
+
+
 class Store:
-    def __init__(self, data_dir=None):
+    def __init__(self, data_dir=None, migrate=True, db_path=None):
         self.dir = Path(data_dir or config.DATA_DIR)
+        self.dir.mkdir(parents=True, exist_ok=True)
         self.lab_dir = self.dir / "lab"
         self.lab_dir.mkdir(parents=True, exist_ok=True)
-        self.gallery_path = self.dir / "gallery.json"
-        self.decisions_path = self.dir / "decisions.jsonl"
         self.expected_path = self.dir / "expected.json"
         self.metrics_path = self.dir / "metrics.json"
-        self._lock = threading.RLock()
+        # Legacy JSON files, read only by tools/import_json.py.
+        self.gallery_path = self.dir / "gallery.json"
+        self.decisions_path = self.dir / "decisions.jsonl"
 
-    # ---- helpers -------------------------------------------------------
-    def _read_json(self, path, default):
-        if not path.exists():
-            return default
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        if db_path is None:
+            db_path = config.KIOSK_DB_PATH if data_dir is None else self.dir / "kiosk.db"
+        self.db_path = Path(db_path)
+        self.db_url = sqlite_url(self.db_path)
+        if migrate:
+            upgrade("kiosk", self.db_url)
+        self.engine = make_engine(self.db_url)
+        self.Session = sessionmaker(self.engine, expire_on_commit=False)
+        self._lock = threading.RLock()
+        self._users = None   # in-memory cache of users + templates
+        self.reload_cache()
+
+    # ---- sessions ------------------------------------------------------
+    @contextmanager
+    def transaction(self):
+        """One write transaction; rolls back on any exception."""
+        with self._lock, self.Session() as s:
+            with s.begin():
+                yield s
+
+    @contextmanager
+    def session(self):
+        with self.Session() as s:
+            yield s
 
     def _write_json(self, path, obj):
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -42,66 +89,118 @@ class Store:
             json.dump(obj, f, indent=1)
         os.replace(tmp, path)
 
-    # ---- gallery -------------------------------------------------------
+    def _read_json(self, path, default):
+        if not path.exists():
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # ---- users and templates -------------------------------------------
+    def reload_cache(self):
+        """Reload users + templates into memory (after any change)."""
+        with self._lock, self.Session() as s:
+            rows = s.execute(
+                select(UserCache, Template.embedding)
+                .outerjoin(Template, (Template.user_id == UserCache.user_id)
+                           & (Template.model_id == config.FACE_MODEL_ID))
+                .order_by(UserCache.user_id)).all()
+            users = []
+            for u, emb in rows:
+                users.append({
+                    "id": u.user_id,
+                    "name": u.name,
+                    "standing": u.standing,
+                    "has_pin": bool(u.pin_hash),
+                    "embedding": blob_to_embedding(emb) if emb is not None else None,
+                })
+            self._users = users
+
     def users(self):
-        with self._lock:
-            return self._read_json(self.gallery_path, {"users": []})["users"]
+        """Users with a usable template (what matching needs) plus those without."""
+        return list(self._users)
+
+    def matchable_users(self):
+        return [u for u in self._users if u["embedding"] is not None]
 
     def get_user(self, user_id):
-        return next((u for u in self.users() if u["id"] == user_id), None)
+        return next((u for u in self._users if u["id"] == user_id), None)
 
-    def add_user(self, name, embedding, standing="active"):
-        with self._lock:
-            users = self.users()
-            n = max([int(u["id"].split("_")[1]) for u in users] or [0]) + 1
-            user = {
-                "id": f"u_{n:03d}",
-                "name": name,
-                "standing": standing,
-                "enrolled_at": now_iso(),
-                "embedding": [round(float(x), 6) for x in embedding],
-            }
-            users.append(user)
-            self._write_json(self.gallery_path, {"users": users})
-            return user
+    def get_pin(self, user_id):
+        with self.session() as s:
+            u = s.get(UserCache, user_id)
+            return (u.pin_salt, u.pin_hash) if u else (None, None)
+
+    def add_user(self, name, embedding, standing="active", pin_salt=None, pin_hash=None,
+                 user_id=None):
+        """Local add (tests and local-only mode). With a central service the
+        kiosk never adds users itself: they arrive in a signed snapshot."""
+        blob = embedding_to_blob(embedding)
+        with self.transaction() as s:
+            if user_id is None:
+                ids = s.scalars(select(UserCache.user_id)).all()
+                n = max([int(i.split("_")[1]) for i in ids if re.fullmatch(r"u_\d+", i)] or [0]) + 1
+                user_id = f"u_{n:03d}"
+            s.add(UserCache(user_id=user_id, name=name, standing=standing,
+                            pin_salt=pin_salt, pin_hash=pin_hash))
+            s.flush()
+            s.add(Template(user_id=user_id, embedding=blob, model_id=config.FACE_MODEL_ID))
+        self.reload_cache()
+        return self.get_user(user_id)
 
     def set_standing(self, user_id, standing):
-        with self._lock:
-            users = self.users()
-            for u in users:
-                if u["id"] == user_id:
-                    u["standing"] = standing
-                    self._write_json(self.gallery_path, {"users": users})
-                    return u
-            return None
+        with self.transaction() as s:
+            u = s.get(UserCache, user_id)
+            if u is None:
+                return None
+            u.standing = standing
+        self.reload_cache()
+        return self.get_user(user_id)
 
     def delete_user(self, user_id):
-        with self._lock:
-            users = self.users()
-            kept = [u for u in users if u["id"] != user_id]
-            if len(kept) == len(users):
+        with self.transaction() as s:
+            u = s.get(UserCache, user_id)
+            if u is None:
                 return False
-            self._write_json(self.gallery_path, {"users": kept})
-            return True
+            s.execute(delete(Template).where(Template.user_id == user_id))
+            s.delete(u)
+        self.reload_cache()
+        return True
 
-    # ---- decision log --------------------------------------------------
+    # ---- local decision log --------------------------------------------
+    @staticmethod
+    def _log_row(record):
+        return DecisionLog(
+            request_id=record["request_id"], stage=record.get("stage", "verify"),
+            ts=record.get("ts") or now_iso(), source=record.get("source", "kiosk"),
+            decision=record.get("decision", ""), payload=json.dumps(record))
+
     def append_decision(self, record):
-        with self._lock:
-            with open(self.decisions_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record) + "\n")
+        with self.transaction() as s:
+            s.add(self._log_row(record))
+
+    def append_access_record(self, record, outbox_row):
+        """Decision log entry and outbox row in ONE transaction. The outbox
+        row's hash chain is computed inside the same transaction."""
+        from .outbox import chain_row
+        with self.transaction() as s:
+            s.add(self._log_row(record))
+            if outbox_row is not None:
+                chain_row(s, outbox_row)
+                s.add(outbox_row)
 
     def read_decisions(self):
-        if not self.decisions_path.exists():
-            return []
-        out = []
-        with open(self.decisions_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
-        return out
+        with self.session() as s:
+            return [json.loads(p) for p in
+                    s.scalars(select(DecisionLog.payload).order_by(DecisionLog.id))]
 
-    # ---- lab clips -----------------------------------------------------
+    def outbox_counts(self):
+        with self.session() as s:
+            total = s.scalar(select(func.count()).select_from(DecisionOutbox))
+            unsynced = s.scalar(select(func.count()).select_from(DecisionOutbox)
+                                .where(DecisionOutbox.synced_at.is_(None)))
+            return {"total": total, "unsynced": unsynced}
+
+    # ---- lab clips (files) ---------------------------------------------
     def expected(self):
         with self._lock:
             data = self._read_json(self.expected_path, {})
@@ -150,7 +249,7 @@ class Store:
                 d.rmdir()
             return True
 
-    # ---- harness output ------------------------------------------------
+    # ---- harness output (file) -----------------------------------------
     def write_metrics(self, metrics):
         with self._lock:
             self._write_json(self.metrics_path, metrics)

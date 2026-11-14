@@ -87,7 +87,7 @@ class Pipeline:
         idx = identity_frames if identity_frames is not None else range(len(frames))
         emb = mean_embedding([self.faces.embed(frames[i], faces[i])
                               for i in idx if faces[i] is not None])
-        user, similarity, cosine = match(emb, self.store.users(), user_id)
+        user, similarity, cosine = match(emb, self.store.matchable_users(), user_id)
         signals["cosine"] = round(cosine, 4)
         return faces, live, signals, user, similarity
 
@@ -158,7 +158,7 @@ class Pipeline:
             return out
 
         emb = mean_embedding([self.faces.embed(frames[i], faces[i]) for i in sub])
-        user, similarity, cosine = match(emb, self.store.users(), first.get("claimed_user"))
+        user, similarity, cosine = match(emb, self.store.matchable_users(), first.get("claimed_user"))
         signals["cosine"] = round(cosine, 4)
         standing = user["standing"] if user else None
         same_user = user is not None and user["id"] == first.get("matched_user")

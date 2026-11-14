@@ -15,6 +15,11 @@ data/gallery.json
 data/decisions.jsonl
 data/metrics.json
 data/*.tmp
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/backup/
 data/lab/*
 !data/lab/.gitkeep
 tests/fixtures/

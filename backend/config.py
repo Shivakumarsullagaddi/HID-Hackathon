@@ -46,5 +46,59 @@ BLINK_EYE_TO_CONTROL = 2.0   # eye change must exceed control-region change by t
 STEPUP_TTL_S = 120
 
 MAX_FRAME_B64_CHARS = 4_000_000
+
+# ---- kiosk database, snapshot and sync (Phase 1b: local-first) -----------
+
+def _env_file(path):
+    """Minimal KEY=VALUE reader for data/kiosk.env (written by the seed script)."""
+    out = {}
+    try:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+_KIOSK_ENV = _env_file(DATA_DIR / "kiosk.env")
+
+
+def setting(name, default=None):
+    return os.environ.get(name, _KIOSK_ENV.get(name, default))
+
+
+KIOSK_DB_PATH = Path(setting("KIOSK_DB_PATH", DATA_DIR / "kiosk.db"))
+FACE_MODEL_ID = "buffalo_sc/w600k_mbf"   # templates from any other model are refused
+EMBEDDING_DIM = 512
+
+KIOSK_ID = setting("KIOSK_ID", "kiosk_lab_a_1")
+KIOSK_ROOM_ID = setting("KIOSK_ROOM_ID", "lab_a")
+ROOM_CHOICES = [r.strip() for r in setting("ROOM_CHOICES", "lab_a,hostel_gate").split(",") if r.strip()]
+KIOSK_API_KEY = setting("KIOSK_API_KEY")          # printed once by tools/seed_central.py
+CENTRAL_URL = setting("CENTRAL_URL", "http://127.0.0.1:9000")
+DEV_HMAC_KEY = "dev-only-snapshot-key-change-me"
+SNAPSHOT_HMAC_KEY = setting("SNAPSHOT_HMAC_KEY", DEV_HMAC_KEY)
+SUPPORTED_SCHEMA_VERSIONS = {1}
+ROOM_TIMEZONE = setting("ROOM_TIMEZONE", "Asia/Kolkata")
+
+FORCE_OFFLINE = setting("FORCE_OFFLINE", "0") == "1"
+_ttl_override = setting("SNAPSHOT_TTL_OVERRIDE_S")
+SNAPSHOT_TTL_OVERRIDE_S = int(_ttl_override) if _ttl_override else None  # can only shorten
+
+POLL_INTERVAL_S = 5.0
+POLL_TIMEOUT_S = 1.0
+FAILURES_TO_DEGRADED = 3
+CLOCK_BACKWARDS_MAX_S = 300
+
+OUTBOX_BATCH = 100
+OUTBOX_SYNCED_RETENTION_S = 24 * 3600
+OUTBOX_MAX_ROWS = 50_000
+
+PIN_MAX_FAILURES = 3
+PIN_FAILURE_WINDOW_S = 600
+PIN_LOCKOUT_S = 600
 SPOOF_TYPES = ["print", "screen", "video", "mask"]
 CLIP_TYPES = ["live"] + SPOOF_TYPES + ["poor_quality"]
