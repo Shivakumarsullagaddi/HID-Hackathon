@@ -13,6 +13,7 @@ import numpy as np
 
 
 from . import config, decision
+from .aws_cloud import cloud
 from .identity import FaceEngine, match, mean_embedding
 from .liveness import LivenessEngine, detect_blink
 from .store import Store, now_iso
@@ -177,8 +178,12 @@ class Pipeline:
             if self.store.read_offline_queue():
                 self.last_sync = self.store.sync_offline_to_central()
             self.store.append_decision(record)
+            cloud.backup_to_s3(self.store.decisions_path, self.store.gallery_path)
         else:
             self.store.append_offline_decision(record)
+
+        cloud.publish_metrics(decision=dec, latency_ms=record.get("latency_ms"))
+        cloud.log_audit_event(record)
 
         record["offline_queue_size"] = len(self.store.read_offline_queue())
 
@@ -282,8 +287,12 @@ class Pipeline:
 
         if self.online:
             self.store.append_decision(record)
+            cloud.backup_to_s3(self.store.decisions_path, self.store.gallery_path)
         else:
             self.store.append_offline_decision(record)
+
+        cloud.publish_metrics(decision=dec, latency_ms=record.get("latency_ms"), is_stepup=True)
+        cloud.log_audit_event(record)
 
         record["offline_queue_size"] = len(self.store.read_offline_queue())
         out.update({k: record[k] for k in ("decision", "reason", "request_id", "similarity",

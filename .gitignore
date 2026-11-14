@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 *.env
+.env.aws
 .aws/
 
 # Model files: the two MiniFASNet ONNX files (1.7 MB each, Apache 2.0) are

@@ -10,6 +10,8 @@ detection falls back to OpenCV's Haar cascade and identity is unavailable
 (nobody matches, so nothing can be ALLOWed).
 """
 import logging
+import os
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -206,18 +208,71 @@ def match(embedding, users, user_id=None):
 
 
 class RekognitionIdentity:
-    """Phase 2 stub (MODE=aws). Not implemented: start only after the Phase 1
-    acceptance checks pass and the Rekognition CLI checks succeed."""
+    """AWS Rekognition face identification provider (MODE=aws)."""
 
-    def __init__(self, collection_id="spot-a-spoof", region="us-east-1"):
-        self.collection_id = collection_id
-        self.region = region
+    def __init__(self, collection_id: Optional[str] = None, region: Optional[str] = None):
+        self.collection_id = collection_id or os.environ.get("REKOGNITION_COLLECTION_ID", "spot-a-spoof-faces")
+        self.region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        self._client = None
+        self.identity_available = False
+        self.error = None
+        self._init_client()
 
-    def create_collection(self):
-        raise NotImplementedError("Phase 2: rekognition.create_collection")
+    def _init_client(self):
+        try:
+            import boto3
+            self._client = boto3.client("rekognition", region_name=self.region)
+            self.identity_available = True
+        except Exception as e:
+            self.identity_available = False
+            self.error = str(e)
 
-    def index_faces(self, user_id, jpeg_bytes):
-        raise NotImplementedError("Phase 2: rekognition.index_faces")
+    def create_collection(self) -> dict:
+        if not self._client:
+            self._init_client()
+        if not self._client:
+            return {"StatusCode": 500, "error": self.error}
+        try:
+            return self._client.create_collection(CollectionId=self.collection_id)
+        except Exception as e:
+            if "ResourceAlreadyExistsException" in type(e).__name__:
+                return {"StatusCode": 200, "message": "Collection already exists"}
+            logger.warning(f"Failed to create Rekognition collection: {e}")
+            return {"StatusCode": 500, "error": str(e)}
 
-    def search_faces_by_image(self, jpeg_bytes):
-        raise NotImplementedError("Phase 2: rekognition.search_faces_by_image")
+    def index_faces(self, user_id: str, image_bytes: bytes) -> dict:
+        if not self._client:
+            self._init_client()
+        if not self._client:
+            raise RuntimeError(f"Rekognition client unavailable: {self.error}")
+        return self._client.index_faces(
+            CollectionId=self.collection_id,
+            Image={"Bytes": image_bytes},
+            ExternalImageId=user_id,
+            DetectionAttributes=["DEFAULT"],
+            MaxFaces=1,
+        )
+
+    def search_faces_by_image(self, image_bytes: bytes, max_faces: int = 1, threshold: float = 80.0):
+        if not self._client:
+            self._init_client()
+        if not self._client:
+            return None, 0.0, 0.0
+        try:
+            res = self._client.search_faces_by_image(
+                CollectionId=self.collection_id,
+                Image={"Bytes": image_bytes},
+                MaxFaces=max_faces,
+                FaceMatchThreshold=threshold,
+            )
+            matches = res.get("FaceMatches", [])
+            if not matches:
+                return None, 0.0, 0.0
+            best = matches[0]
+            matched_id = best.get("Face", {}).get("ExternalImageId")
+            similarity = float(best.get("Similarity", 0.0))
+            confidence = float(best.get("Face", {}).get("Confidence", 0.0))
+            return matched_id, similarity, confidence
+        except Exception as e:
+            logger.warning(f"Rekognition search_faces_by_image failed: {e}")
+            return None, 0.0, 0.0

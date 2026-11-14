@@ -59,6 +59,28 @@ async function showStatus() {
 }
 
 async function startCamera(video) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const isHttp = window.location.protocol === 'http:' &&
+                   window.location.hostname !== 'localhost' &&
+                   window.location.hostname !== '127.0.0.1';
+    let msg = 'Camera API is not supported in this browser context.';
+    if (isHttp) {
+      const host = window.location.hostname;
+      const nipUrl = `https://${host}.nip.io${window.location.pathname}`;
+      const httpsUrl = `https://${host}${window.location.pathname}`;
+      msg = `<b>Camera Blocked:</b> Modern browsers require HTTPS to access webcams on remote IPs.<br>` +
+            `Please use the secure HTTPS endpoint: ` +
+            `<a href="${nipUrl}" style="color:var(--primary);text-decoration:underline;font-weight:bold;">${nipUrl}</a> or ` +
+            `<a href="${httpsUrl}" style="color:var(--primary);text-decoration:underline;">${httpsUrl}</a>.<br>` +
+            `<small>(If using HTTP, enable <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> for this IP)</small>`;
+    }
+    const banner = $('#status-banner') || $('#conditions') || $('#reason');
+    if (banner) {
+      banner.hidden = false;
+      banner.innerHTML = msg;
+    }
+    throw new Error('Camera blocked: navigator.mediaDevices requires a secure HTTPS origin.');
+  }
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false,
   });

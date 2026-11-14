@@ -72,6 +72,11 @@ class Store:
             }
             users.append(user)
             self._write_json(self.gallery_path, {"users": users})
+            try:
+                from .aws_cloud import cloud
+                cloud.backup_to_s3(gallery_path=self.gallery_path)
+            except Exception:
+                pass
             return user
 
     def update_user(self, user_id, standing=None, role=None):
@@ -168,14 +173,26 @@ class Store:
             if not queued:
                 return {"synced_count": 0, "remaining_queue": 0, "synced_at": None}
             synced_ts = now_iso()
+            synced_entries = []
             with open(self.decisions_path, "a", encoding="utf-8") as f:
                 for item in queued:
                     entry = {**item, "synced_from_offline": True, "synced_at": synced_ts}
+                    synced_entries.append(entry)
                     f.write(json.dumps(entry) + "\n")
             tmp = self.offline_queue_path.with_suffix(".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 pass
             os.replace(tmp, self.offline_queue_path)
+
+            try:
+                from .aws_cloud import cloud
+                cloud.backup_to_s3(self.decisions_path, self.gallery_path, offline_batch=synced_entries)
+                cloud.publish_metrics(decision="ALLOW", offline_sync_count=len(synced_entries))
+                for entry in synced_entries:
+                    cloud.log_audit_event(entry)
+            except Exception:
+                pass
+
             return {"synced_count": len(queued), "remaining_queue": 0, "synced_at": synced_ts}
 
 
