@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spot-a-Spoof · Spoof lab</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Spot-a-Spoof</h1>
+    <nav>
+      <a href="/">Kiosk</a><a href="/enrol">Enrol</a><a class="here" href="/lab">Spoof lab</a><a href="/metrics">Metrics</a>
+    </nav>
+    <span id="mode-badge"></span>
+  </header>
+  <main>
+    <div id="status-banner" class="banner" hidden></div>
+    <div class="grid">
+      <section>
+        <div class="stage">
+          <video id="video" playsinline muted></video>
+          <div id="hint" class="hint">Starting camera…</div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Record a test clip</h2>
+        <p class="sub">Hold the live face or the spoof in front of the camera, label it, and record.
+          Clips are saved under <code>data/lab/</code> and stay on this machine.</p>
+        <form id="clip-form">
+          <div class="form">
+            <label>Type
+              <select id="type">
+                <option value="live">live</option>
+                <option value="print">print (printed photo)</option>
+                <option value="screen">screen (photo on a phone)</option>
+                <option value="video">video (video replay)</option>
+                <option value="mask">mask</option>
+                <option value="poor_quality">poor_quality (dark or blurry)</option>
+              </select>
+            </label>
+            <label>Person shown <input id="person" maxlength="40" required placeholder="alice"></label>
+            <label>Enrolled?
+              <select id="enrolled"><option value="true">yes</option><option value="false">no</option></select>
+            </label>
+            <label>Lighting <input id="lighting" maxlength="40" required placeholder="daylight"></label>
+            <label>Expected decision
+              <select id="expected">
+                <option value="">auto</option>
+                <option>ALLOW</option><option>REQUEST_VERIFICATION</option><option>DENY</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <button id="record" disabled>Record clip</button>
+            <span id="message" class="muted"></span>
+          </div>
+        </form>
+      </section>
+    </div>
+    <section class="card" style="margin-top:20px">
+      <div class="row" style="margin:0 0 12px;justify-content:space-between">
+        <h2 style="margin:0">Clips <span id="count" class="muted"></span></h2>
+        <a class="btn" href="/metrics">Run all on the metrics page</a>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Clip</th><th>Type</th><th>Person</th><th>Lighting</th><th>Expected</th><th>Actual</th><th></th></tr></thead>
+          <tbody id="clips"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="/static/camera.js"></script>
+  <script src="/static/lab.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spot-a-Spoof · Kiosk</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Spot-a-Spoof</h1>
+    <nav>
+      <a class="here" href="/">Kiosk</a><a href="/enrol">Enrol</a><a href="/lab">Spoof lab</a><a href="/metrics">Metrics</a>
+    </nav>
+    <span id="mode-badge"></span>
+  </header>
+  <main>
+    <div id="status-banner" class="banner" hidden></div>
+    <div class="grid">
+      <section>
+        <div class="stage">
+          <video id="video" playsinline muted></video>
+          <div id="oval" class="oval"></div>
+          <div id="hint" class="hint">Starting camera…</div>
+        </div>
+        <div class="row">
+          <button id="verify" class="big" disabled>Verify</button>
+        </div>
+      </section>
+      <section>
+        <div id="result" class="card result">
+          <h2>Result</h2>
+          <p class="sub">Look at the camera, line your face up with the oval, and press Verify.</p>
+        </div>
+        <div id="stepup" class="card" hidden>
+          <h2>Extra check: blink</h2>
+          <p class="sub">We could not confirm you from a single look. Press Start, then blink twice
+            slowly while looking at the camera.</p>
+          <div class="row">
+            <button id="blink-start">Start blink check</button>
+            <span id="blink-status" class="countdown"></span>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/camera.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

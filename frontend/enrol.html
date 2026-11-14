@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spot-a-Spoof · Enrol</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Spot-a-Spoof</h1>
+    <nav>
+      <a href="/">Kiosk</a><a class="here" href="/enrol">Enrol</a><a href="/lab">Spoof lab</a><a href="/metrics">Metrics</a>
+    </nav>
+    <span id="mode-badge"></span>
+  </header>
+  <main>
+    <div id="status-banner" class="banner" hidden></div>
+    <div class="grid">
+      <section>
+        <div class="stage">
+          <video id="video" playsinline muted></video>
+          <div id="oval" class="oval"></div>
+          <div id="hint" class="hint">Starting camera…</div>
+        </div>
+        <form id="enrol-form" class="row">
+          <input id="name" placeholder="Full name" maxlength="60" required style="flex:1">
+          <button id="enrol" disabled>Capture and enrol</button>
+        </form>
+        <p id="message" class="sub" style="margin-top:12px">Five frames are taken over two seconds.
+          Only the face embedding is stored, not the photos.</p>
+      </section>
+      <section class="card">
+        <h2>Enrolled users</h2>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Standing</th><th></th></tr></thead>
+            <tbody id="users"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/camera.js"></script>
+  <script src="/static/enrol.js"></script>
+</body>
+</html>

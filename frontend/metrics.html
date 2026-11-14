@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spot-a-Spoof · Metrics</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Spot-a-Spoof</h1>
+    <nav>
+      <a href="/">Kiosk</a><a href="/enrol">Enrol</a><a href="/lab">Spoof lab</a><a class="here" href="/metrics">Metrics</a>
+    </nav>
+    <span id="mode-badge"></span>
+  </header>
+  <main>
+    <div id="status-banner" class="banner" hidden></div>
+    <div class="row" style="margin:0 0 16px;justify-content:space-between">
+      <div>
+        <h2 style="margin:0">Harness results</h2>
+        <div id="conditions" class="muted"></div>
+      </div>
+      <button id="run">Run harness</button>
+    </div>
+    <div id="missing" class="banner" hidden></div>
+    <div id="tiles" class="tiles"></div>
+
+    <section class="card">
+      <h2>By clip type</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>Type</th><th class="num">Clips</th><th class="num">Accuracy</th><th class="num">FAR</th>
+            <th class="num">FRR</th><th class="num">Step-ups</th><th class="num">p50 ms</th><th class="num">p95 ms</th>
+          </tr></thead>
+          <tbody id="by-type"></tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">
+        FAR = spoof clips decided ALLOW / spoof clips. FRR = live clips expected ALLOW but decided DENY / live
+        clips expected ALLOW. Accuracy = decision equals expected decision. Counts are shown with every rate.</p>
+    </section>
+
+    <section class="card">
+      <h2>Decisions by clip type</h2>
+      <div class="chart-box"><canvas id="chart" role="img" aria-label="Stacked bars: number of ALLOW, verification-needed and DENY decisions for each clip type. The same numbers are in the table above."></canvas></div>
+    </section>
+
+    <section class="card">
+      <h2>Clips that did not match the expected decision</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Clip</th><th>Expected</th><th>Actual</th><th>Reason</th><th class="num">Liveness</th><th class="num">Similarity</th></tr></thead>
+        <tbody id="misses"></tbody>
+      </table></div>
+    </section>
+
+    <section class="card">
+      <h2>Thresholds in use</h2>
+      <dl id="thresholds" class="kv"></dl>
+    </section>
+
+    <section class="card">
+      <h2>Kiosk log</h2>
+      <dl id="kiosk" class="kv"></dl>
+    </section>
+  </main>
+  <script src="/static/camera.js"></script>
+  <script src="/static/metrics.js"></script>
+</body>
+</html>

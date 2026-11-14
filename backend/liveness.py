@@ -185,8 +185,8 @@ _REG = (slice(28, 84), slice(20, 92))  # region used to register frames
 def detect_blink(frames, faces):
     """Did the eyes close and reopen during the clip?
 
-    Every frame is aligned on its 5 face keypoints and registered to the
-    median frame. A blink is a short-lived change in BOTH eye regions that is
+    Every frame is aligned with one shared transform and registered to the
+    median frame by a small translation search. A blink is a short-lived change in BOTH eye regions that is
     clearly larger than the change in the eyebrows and nose at the same
     moment (which absorbs head motion, lighting change and alignment jitter).
     A static print has no such change. NOTE: a replayed video of a blinking
@@ -194,12 +194,17 @@ def detect_blink(frames, faces):
 
     Returns (blinked, signals).
     """
+    usable = [(f, face) for f, face in zip(frames, faces)
+              if face is not None and face.get("kps") is not None]
     aligned = []
-    for f, face in zip(frames, faces):
-        if face is None or face.get("kps") is None:
-            continue
-        g = cv2.cvtColor(align_face(f, face["kps"]), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        aligned.append(g * (110.0 / (g[28:100, 20:92].mean() + 1e-6)))  # exposure-normalise
+    if usable:
+        # One shared transform from the median keypoints: closing the eyes moves
+        # the detector's eye keypoints, so per-frame alignment would smear the
+        # whole face on exactly the frames that matter.
+        kps = np.median(np.stack([face["kps"] for _, face in usable]), axis=0)
+        for f, _ in usable:
+            g = cv2.cvtColor(align_face(f, kps), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            aligned.append(g * (110.0 / (g[28:100, 20:92].mean() + 1e-6)))  # exposure-normalise
     signals = {"frames_used": len(aligned), "eye_diff": None, "control_diff": None,
                "blink_frames": 0}
     if len(aligned) < config.BLINK_MIN_FRAMES:
@@ -216,8 +221,8 @@ def detect_blink(frames, faces):
 
     def register(img):
         best, best_err = img, np.inf
-        for dy in range(-3, 4):
-            for dx in range(-3, 4):
+        for dy in range(-6, 7):       # small head movement during the clip
+            for dx in range(-6, 7):
                 shifted = np.roll(img, (dy, dx), axis=(0, 1))
                 err = np.abs(shifted - ref)[reg_mask].mean()
                 if err < best_err:

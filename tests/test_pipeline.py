@@ -195,11 +195,12 @@ def test_api_end_to_end(client, imgs):
                        ).json()["decision"] == "DENY"
     client.patch("/api/users/u_001", json={"standing": "active"})
 
-    for kind, key, enrolled in (("live", "image_T1", True), ("print", "image_F2", True),
-                                ("live", "group", False)):
+    dark = cv2.convertScaleAbs(imgs["image_T1"], alpha=0.3)
+    for kind, img in (("live", imgs["image_T1"]), ("print", imgs["image_F2"]),
+                      ("poor_quality", dark)):
         clip = client.post("/api/lab/clips", json={
-            "type": kind, "person": "alice" if enrolled else "stranger", "enrolled": enrolled,
-            "lighting": "sample", "frames": b64(burst(imgs[key]))}).json()
+            "type": kind, "person": "alice", "enrolled": True,
+            "lighting": "sample", "frames": b64(burst(img))}).json()
         run = client.post(f"/api/lab/clips/{clip['name']}/run").json()
         assert run["actual"] == run["expected"], clip["name"]
 

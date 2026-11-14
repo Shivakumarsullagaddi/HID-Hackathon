@@ -5,7 +5,16 @@ __pycache__/
 .env
 *.env
 .aws/
-models/**/*.onnx
+
+# Model files: the two MiniFASNet ONNX files (1.7 MB each, Apache 2.0) are
+# committed. buffalo_sc is downloaded by tools/fetch_models.py.
+models/buffalo_sc/
+
+# Biometric and runtime data never leaves the machine.
+data/gallery.json
 data/decisions.jsonl
+data/metrics.json
+data/*.tmp
 data/lab/*
 !data/lab/.gitkeep
+tests/fixtures/
