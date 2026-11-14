@@ -8,13 +8,14 @@ from collections import Counter
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, decision, evaluate
 from .models import (BlinkRequest, BlinkResponse, ClipCreate, EnrolRequest, EnrolResponse,
                      StandingUpdate, UserOut, VerifyRequest, VerifyResponse)
+from .otp_security import HardenedVerifyResponse, VerifyOtpRequest, challenge_manager
 from .pipeline import FrameError, Pipeline, decode_frames
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -28,8 +29,10 @@ async def lifespan(app):
     if config.MODE != "local":
         log.warning("MODE=%s requested but only local mode is implemented; using local.",
                     config.MODE)
-    state["pipeline"] = Pipeline()
-    log.info("pipeline ready: %s", state["pipeline"].status())
+    if "pipeline" not in state or state["pipeline"] is None:
+        state["pipeline"] = Pipeline()
+    status_str = state["pipeline"].status() if hasattr(state["pipeline"], "status") else "ready"
+    log.info("pipeline ready: %s", status_str)
     yield
 
 
@@ -81,11 +84,84 @@ def status():
     return pipe().status()
 
 
-@app.post("/api/verify", response_model=VerifyResponse)
+@app.post("/api/verify", response_model=HardenedVerifyResponse)
+@app.post("/verify", response_model=HardenedVerifyResponse)
 def verify(req: VerifyRequest):
     if req.user_id and not pipe().store.get_user(req.user_id):
         raise HTTPException(404, f"unknown user_id {req.user_id}")
-    return pipe().verify(frames_or_400(req.frames), req.user_id, req.clip_label)
+
+    # Anti-replay frame check: reject duplicate frames within 10s
+    if req.frames and challenge_manager.is_replay(req.frames):
+        return {
+            "decision": "DENY",
+            "reason": "Replay attack detected: duplicate frame within 10s",
+            "liveness": 0.0,
+            "similarity": 0.0,
+            "matched_user": req.user_id,
+            "latency_ms": 0.0,
+            "gate_passed": False,
+            "liveness_mode": getattr(pipe().liveness, "mode", "ensemble"),
+            "request_id": "replay-blocked",
+            "gate_reason": "replay_detected",
+            "signals": {"replay_detected": True},
+        }
+
+    # Rate limiting: 3-strike lockout per user
+    if req.user_id and challenge_manager.is_rate_limited(req.user_id):
+        return {
+            "decision": "DENY",
+            "reason": f"User {req.user_id} locked out: 3-strike rate limit exceeded",
+            "liveness": 0.0,
+            "similarity": 0.0,
+            "matched_user": req.user_id,
+            "latency_ms": 0.0,
+            "gate_passed": False,
+            "liveness_mode": getattr(pipe().liveness, "mode", "ensemble"),
+            "request_id": "rate-limit-blocked",
+            "gate_reason": "rate_limited",
+            "signals": {"rate_limited": True},
+        }
+
+    result = pipe().verify(frames_or_400(req.frames), req.user_id, req.clip_label)
+
+    # When /verify decides REQUEST VERIFICATION, create an OTP challenge
+    if result.get("decision") == "REQUEST_VERIFICATION":
+        user_for_challenge = result.get("matched_user") or req.user_id or "demo_user"
+        try:
+            challenge = challenge_manager.create_challenge(
+                user_id=user_for_challenge,
+                liveness_score=result.get("liveness", 0.0),
+                similarity_score=result.get("similarity", 0.0),
+            )
+            result["challenge_id"] = challenge["challenge_id"]
+            # Include demo_otp in dev/local mode for hackathon convenience
+            result["demo_otp"] = challenge["otp_code"]
+        except Exception as e:
+            log.warning("Challenge creation declined: %s", e)
+            result["reason"] = f"{result.get('reason', '')} (OTP unavailable: {e})"
+
+    return result
+
+
+@app.post("/api/verify-otp")
+@app.post("/verify-otp")
+def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
+    """Verifies single-use OTP challenge and returns signed ALLOW verdict."""
+    result = challenge_manager.verify_otp(req.effective_challenge_id, req.effective_otp)
+    if "signature" in result:
+        response.headers["X-Verdict-Signature"] = result["signature"]
+    if not result.get("verified", False):
+        return JSONResponse(status_code=400, content=result)
+    return result
+
+
+@app.get("/api/security/audit-log")
+def get_security_audit_log():
+    """Audit log trail inspection endpoint."""
+    return {
+        "valid": challenge_manager.verify_audit_chain(),
+        "entries": challenge_manager.get_audit_log(),
+    }
 
 
 @app.post("/api/stepup/blink", response_model=BlinkResponse)

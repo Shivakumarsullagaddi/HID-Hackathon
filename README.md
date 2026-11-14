@@ -10,13 +10,20 @@ shows the misses instead of hiding them.
 
 ## Setup
 
-Needs Python 3.11 and Chrome or Edge. Tested on Windows 11, CPU only.
+Requires Python 3.11 and Chrome or Edge. Tested on Windows 11, CPU only.
 
 ```
 py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.lock
 python tools/fetch_models.py --samples
+```
+
+If `py` is not on `PATH`, create the environment with the Python 3.11
+executable directly, for example:
+
+```
+& "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" -m venv .venv
 ```
 
 `fetch_models.py` downloads the InsightFace `buffalo_sc` pack (16 MB) into
