@@ -1,0 +1,17 @@
+Spot-a-Spoof uses third-party models.
+
+models/minifasnet_v2.onnx, models/minifasnet_v1se.onnx
+  Converted (tools/convert_minifasnet.py) from the weights published by
+  Minivision in Silent-Face-Anti-Spoofing, commit
+  b6d5f04ad78778917853b25c778acef6d5626d15, licensed under Apache License 2.0.
+  https://github.com/minivision-ai/Silent-Face-Anti-Spoofing
+  Changes: format conversion from PyTorch to ONNX only.
+  backend/liveness.py:crop_for_fas is adapted from src/generate_patches.py
+  in the same repository.
+
+models/buffalo_sc/ (downloaded by tools/fetch_models.py, not redistributed here)
+  InsightFace buffalo_sc model pack (SCRFD det_500m, ArcFace w600k_mbf).
+  https://github.com/deepinsight/insightface
+  The InsightFace pretrained models are released for non-commercial research
+  purposes only. A commercial product needs a licence from InsightFace or a
+  different face model.

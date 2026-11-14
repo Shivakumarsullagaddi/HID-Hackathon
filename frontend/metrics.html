@@ -65,6 +65,16 @@
       <h2>Kiosk log</h2>
       <dl id="kiosk" class="kv"></dl>
     </section>
+
+    <section class="card">
+      <h2>Kiosk state and sync</h2>
+      <dl id="sync" class="kv"></dl>
+      <h2 style="margin-top:16px">Recent state changes</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>When</th><th>From</th><th>To</th><th>Reason</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table></div>
+    </section>
   </main>
   <script src="/static/camera.js"></script>
   <script src="/static/metrics.js"></script>

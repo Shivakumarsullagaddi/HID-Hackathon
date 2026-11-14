@@ -75,10 +75,12 @@ function render(data) {
     <dt>Sharpness (Laplacian variance)</dt><dd>&gt; ${t.sharpness_min}</dd>`;
 
   const k = data.kiosk_log;
-  const counts = (obj) => Object.entries(obj).map(([key, n]) => `${esc(key)} ${n}`).join(' · ') || 'none';
+  const counts = (obj) => Object.entries(obj || {})
+    .map(([key, n]) => `${esc(DECISION_LABEL[key] || key)} ${n}`).join(' · ') || 'none';
   $('#kiosk').innerHTML = `
     <dt>Verify attempts</dt><dd>${k.n}</dd>
-    <dt>First decisions</dt><dd>${counts(k.decisions)}</dd>
+    <dt>Access decisions</dt><dd>${counts(k.final_decisions)}</dd>
+    <dt>Biometric results</dt><dd>${counts(k.decisions)}</dd>
     <dt>Step-up outcomes</dt><dd>${counts(k.stepups)}</dd>
     <dt>Liveness mode</dt><dd>${counts(k.liveness_modes)}</dd>
     <dt>Server latency</dt><dd>p50 ${ms(k.p50_ms)} ms · p95 ${ms(k.p95_ms)} ms</dd>`;
@@ -120,9 +122,30 @@ function render(data) {
   drawChart(h);
 }
 
+function renderSync(st) {
+  const ls = st.last_sync;
+  const pushed = ls ? `${ls.push.accepted} accepted, ${ls.push.duplicates} duplicates` : 'none yet';
+  $('#sync').innerHTML = `
+    <dt>State</dt><dd>${stateBadge(st)} <span class="muted">${esc(st.reason)}</span></dd>
+    <dt>Outbox</dt><dd>${st.outbox.total} rows, ${st.outbox.unsynced} not yet synced</dd>
+    <dt>Last sync</dt><dd>${st.last_sync_at ? esc(new Date(st.last_sync_at).toLocaleString()) : 'never'}
+      <span class="muted">(last push: ${esc(pushed)})</span></dd>
+    <dt>Last error</dt><dd>${esc(st.last_error || 'none')}</dd>
+    <dt>Snapshot</dt><dd>${st.snapshot_version == null ? 'none'
+      : `v${st.snapshot_version}, issued ${esc(new Date(st.snapshot_issued_at).toLocaleString())}, TTL ${st.ttl_s} s`}</dd>
+    ${st.warnings.length ? `<dt>Warnings</dt><dd>${esc(st.warnings.join('; '))}</dd>` : ''}`;
+  $('#history').innerHTML = st.history.length ? st.history.map((h) => `<tr>
+    <td>${esc(new Date(h.at).toLocaleString())}</td><td>${esc(h.from || 'start')}</td>
+    <td><span class="pill"><span class="dot ${STATE_CLASS[h.to] || ''}"></span>${esc(h.to)}</span></td>
+    <td>${esc(h.reason)}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="muted">No state changes yet.</td></tr>';
+}
+
 async function load() {
   render(await api('/api/metrics'));
+  renderSync(await api('/api/state'));
 }
+setInterval(() => api('/api/state').then(renderSync).catch(() => {}), 3000);
 
 $('#run').addEventListener('click', async () => {
   const btn = $('#run');

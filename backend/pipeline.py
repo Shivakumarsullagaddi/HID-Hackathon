@@ -1,5 +1,10 @@
 """The verification pipeline shared by the kiosk, the lab and the harness:
-quality gate -> liveness -> identity -> standing -> decide -> log."""
+quality gate -> liveness -> identity -> biometric decision -> schedule ->
+access decision -> log (and outbox for kiosk decisions).
+
+There is one decision path, online or offline: the kiosk always decides
+locally from its signed snapshot. Kiosk state only changes how much it
+trusts that data."""
 import base64
 import binascii
 import threading
@@ -11,7 +16,12 @@ import numpy as np
 
 from . import config, decision
 from .identity import FaceEngine, match, mean_embedding
+from .db import utcnow
+from .kiosk_models import DecisionOutbox
 from .liveness import LivenessEngine, detect_blink
+from .pin import PinLockout, verify_pin
+from .schedule import check_schedule, in_exam_window
+from .state import StaticState
 from .store import Store, now_iso
 
 
@@ -62,12 +72,23 @@ def quality_gate(frames, faces):
 
 
 class Pipeline:
-    def __init__(self, store=None):
+    def __init__(self, store=None, state=None, clock=None):
         self.store = store or Store()
+        self.state = state or StaticState()   # LOCKED unless a state manager is given
+        self.clock = clock or utcnow
         self.faces = FaceEngine()
         self.liveness = LivenessEngine()
+        self.pin_lockout = PinLockout()
         self._pending = {}           # request_id -> first record awaiting step-up
         self._lock = threading.Lock()
+
+    def _access_context(self, user, room_id, now):
+        """Kiosk state and schedule, read on the kiosk. Never taken from the client."""
+        kiosk_state, snapshot_version = self.state.current(now)
+        with self.store.session() as s:
+            schedule_status = check_schedule(s, user["id"], room_id, now) if user else None
+            in_exam = in_exam_window(s, room_id, now)
+        return kiosk_state, snapshot_version, schedule_status, in_exam
 
     def status(self):
         return {
@@ -76,6 +97,9 @@ class Pipeline:
             "liveness_error": self.liveness.error,
             "identity_available": self.faces.identity_available,
             "identity_error": self.faces.error,
+            "kiosk_state": self.state.current()[0],
+            "kiosk_id": config.KIOSK_ID,
+            "room_id": config.KIOSK_ROOM_ID,
         }
 
     def _analyse(self, frames, user_id=None, identity_frames=None):
@@ -87,23 +111,41 @@ class Pipeline:
         idx = identity_frames if identity_frames is not None else range(len(frames))
         emb = mean_embedding([self.faces.embed(frames[i], faces[i])
                               for i in idx if faces[i] is not None])
-        user, similarity, cosine = match(emb, self.store.users(), user_id)
+        user, similarity, cosine = match(emb, self.store.matchable_users(), user_id)
         signals["cosine"] = round(cosine, 4)
         return faces, live, signals, user, similarity
 
     # ---- first pass ----------------------------------------------------
-    def verify(self, frames, user_id=None, clip_label=None, source="kiosk"):
+    def verify(self, frames, user_id=None, clip_label=None, source="kiosk", room_id=None):
+        """`decision`/`reason` stay the biometric result (ALLOW,
+        REQUEST_VERIFICATION, DENY) so the harness and old clients keep
+        working. `final_decision`/`final_reason` are what the door does."""
         t0 = time.perf_counter()
+        room_id = room_id or config.KIOSK_ROOM_ID
         faces, live, signals, user, similarity = self._analyse(frames, user_id)
         gate_passed, gate_reason, gate_detail = quality_gate(frames, faces)
         signals.update(gate_detail)
         standing = user["standing"] if user else None
         dec, reason = decision.decide(live, similarity, gate_passed, standing, user is not None)
+        now = self.clock()
+        kiosk_state, snapshot_version, schedule_status, in_exam = self._access_context(
+            user, room_id, now)
+        final, final_reason = decision.decide_access(
+            kiosk_state, dec, reason, standing, schedule_status, in_exam)
         record = {
             "ts": now_iso(),
             "request_id": uuid.uuid4().hex,
+            "record_id": str(uuid.uuid4()),
             "stage": "verify",
             "source": source,
+            "room_id": room_id,
+            "final_decision": final,
+            "final_reason": final_reason,
+            "bio_decision": dec,
+            "kiosk_state": kiosk_state,
+            "snapshot_version": snapshot_version,
+            "schedule_status": schedule_status,
+            "in_exam_window": in_exam,
             "decision": dec,
             "reason": reason,
             "liveness": round(live, 4),
@@ -120,8 +162,8 @@ class Pipeline:
             "signals": signals,
         }
         record["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-        self.store.append_decision(record)
-        if dec == decision.REQUEST_VERIFICATION:
+        self._persist(record, now)
+        if dec == decision.REQUEST_VERIFICATION or final == decision.STEP_UP:
             with self._lock:
                 now = time.time()
                 self._pending = {k: v for k, v in self._pending.items()
@@ -130,9 +172,46 @@ class Pipeline:
         return record
 
     # ---- blink step-up -------------------------------------------------
-    def stepup_blink(self, frames, request_id=None):
+    def _persist(self, record, now):
+        """Local log always; kiosk decisions also go to the outbox, in the
+        same transaction. Lab and harness runs are test tooling: no outbox.
+        The outbox row holds decisions and scores only: no frames, images
+        or embeddings."""
+        if record.get("source") != "kiosk":
+            self.store.append_decision(record)
+            return
+        row = DecisionOutbox(
+            record_id=record["record_id"], request_id=record["request_id"],
+            stepup_of=record.get("stepup_of"), ts=now, room_id=record["room_id"],
+            user_id=record.get("matched_user"), bio_decision=record["bio_decision"],
+            final_decision=record["final_decision"],
+            reason=(record["final_reason"] or "")[:120], kiosk_state=record["kiosk_state"],
+            snapshot_version=record.get("snapshot_version"), liveness=record.get("liveness"),
+            similarity=record.get("similarity"), latency_ms=record.get("latency_ms"),
+            liveness_mode=record.get("liveness_mode"))
+        self.store.append_access_record(record, row)
+
+    def report_failed_attempts(self, room_id=None):
+        """Alert-worthy audit record after repeated failed attempts (the
+        kiosk page calls this after 3 failures within 2 minutes)."""
+        now = self.clock()
+        room_id = room_id or config.KIOSK_ROOM_ID
+        kiosk_state, snapshot_version = self.state.current(now)
+        record = {
+            "ts": now_iso(), "request_id": uuid.uuid4().hex, "record_id": str(uuid.uuid4()),
+            "stage": "attempts", "source": "kiosk", "room_id": room_id,
+            "final_decision": decision.DENY, "final_reason": "Repeated failed attempts",
+            "bio_decision": decision.DENY, "kiosk_state": kiosk_state,
+            "snapshot_version": snapshot_version, "decision": decision.DENY,
+            "reason": "Repeated failed attempts", "matched_user": None,
+        }
+        self._persist(record, now)
+        return record
+
+    def stepup_blink(self, frames, request_id=None, pin=None):
         """Blink check. With a pending request_id the result replaces the first
-        decision and is logged as a second record with the same request_id."""
+        decision and is logged as a second record with the same request_id.
+        In DEGRADED state the matched user's PIN is also required."""
         t0 = time.perf_counter()
         n = len(frames)
         sample = sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})
@@ -158,17 +237,50 @@ class Pipeline:
             return out
 
         emb = mean_embedding([self.faces.embed(frames[i], faces[i]) for i in sub])
-        user, similarity, cosine = match(emb, self.store.users(), first.get("claimed_user"))
+        user, similarity, cosine = match(emb, self.store.matchable_users(), first.get("claimed_user"))
         signals["cosine"] = round(cosine, 4)
         standing = user["standing"] if user else None
         same_user = user is not None and user["id"] == first.get("matched_user")
-        dec, reason = decision.decide_stepup(blinked, live, similarity, standing,
-                                             user is not None, same_user)
+        now = self.clock()
+        room_id = first.get("room_id") or config.KIOSK_ROOM_ID
+        kiosk_state, snapshot_version, schedule_status, in_exam = self._access_context(
+            user, room_id, now)
+        pin_checked = None
+        if kiosk_state == decision.DEGRADED:
+            locked = bool(user) and self.pin_lockout.is_locked(user["id"], time.time())
+            pin_ok = False
+            if user and not locked and pin:
+                salt, digest = self.store.get_pin(user["id"])
+                pin_ok = verify_pin(pin, salt, digest)
+                if pin_ok:
+                    self.pin_lockout.record_success(user["id"])
+                else:
+                    self.pin_lockout.record_failure(user["id"], time.time())
+            pin_checked = pin_ok
+            dec, reason = decision.decide_stepup_offline(
+                blinked, live, similarity, standing, user is not None, same_user,
+                pin_ok, locked)
+        else:
+            dec, reason = decision.decide_stepup(blinked, live, similarity, standing,
+                                                 user is not None, same_user)
+        final, final_reason = decision.decide_access_stepup(
+            kiosk_state, dec, reason, standing, schedule_status, in_exam)
         record = {
             "ts": now_iso(),
             "request_id": first["request_id"],
+            "record_id": str(uuid.uuid4()),
+            "stepup_of": first.get("record_id"),
             "stage": "stepup",
             "source": first["source"],
+            "room_id": room_id,
+            "final_decision": final,
+            "final_reason": final_reason,
+            "bio_decision": dec,
+            "kiosk_state": kiosk_state,
+            "snapshot_version": snapshot_version,
+            "schedule_status": schedule_status,
+            "in_exam_window": in_exam,
+            "pin_checked": pin_checked,   # True/False/None, never the PIN itself
             "decision": dec,
             "reason": reason,
             "liveness": round(live, 4),
@@ -185,13 +297,19 @@ class Pipeline:
             "signals": signals,
         }
         record["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-        self.store.append_decision(record)
-        out.update({k: record[k] for k in ("decision", "reason", "request_id", "similarity",
-                                           "matched_user", "matched_name", "latency_ms")})
+        self._persist(record, now)
+        out.update({k: record[k] for k in (
+            "decision", "reason", "request_id", "record_id", "similarity", "matched_user",
+            "matched_name", "latency_ms", "final_decision", "final_reason", "bio_decision",
+            "kiosk_state", "snapshot_version", "schedule_status", "room_id", "pin_checked")})
         return out
 
     # ---- enrolment -----------------------------------------------------
     def enrol(self, name, frames):
+        """Local enrolment (tests, or a kiosk with no central configured)."""
+        return self.store.add_user(name, self.embed_for_enrol(frames).tolist())
+
+    def embed_for_enrol(self, frames):
         """Mean embedding over 5 frames; every frame must show a usable face."""
         if not self.faces.identity_available:
             raise FrameError(f"identity model unavailable: {self.faces.error}")
@@ -204,5 +322,4 @@ class Pipeline:
         gate_passed, gate_reason, _ = quality_gate(frames, faces)
         if not gate_passed:
             raise FrameError(f"image quality too low to enrol: {gate_reason}")
-        emb = mean_embedding([self.faces.embed(f, fc) for f, fc in zip(frames, faces)])
-        return self.store.add_user(name, emb.tolist())
+        return mean_embedding([self.faces.embed(f, fc) for f, fc in zip(frames, faces)])
