@@ -13,10 +13,25 @@
     <nav>
       <a class="here" href="/">Kiosk</a><a href="/enrol">Enrol</a><a href="/lab">Spoof lab</a><a href="/metrics">Metrics</a>
     </nav>
+    <span id="state-badge"></span>
     <span id="mode-badge"></span>
   </header>
   <main>
     <div id="status-banner" class="banner" hidden></div>
+    <div id="locked-banner" class="banner bad" hidden>
+      <b>Offline too long. Please see the guard.</b>
+      <span id="locked-reason" class="muted"></span>
+    </div>
+    <div class="row toolbar">
+      <label class="inline">Door
+        <select id="room"></select>
+      </label>
+      <label class="inline toggle" title="Demo control: the kiosk stops talking to central, exactly as in a real outage">
+        <input type="checkbox" id="simulate"> Simulate central outage
+        <span class="sim-tag" id="sim-tag" hidden>SIMULATED</span>
+      </label>
+      <span id="state-detail" class="muted"></span>
+    </div>
     <div class="grid">
       <section>
         <div class="stage">
@@ -34,11 +49,14 @@
           <p class="sub">Look at the camera, line your face up with the oval, and press Verify.</p>
         </div>
         <div id="stepup" class="card" hidden>
-          <h2>Extra check: blink</h2>
-          <p class="sub">We could not confirm you from a single look. Press Start, then blink twice
-            slowly while looking at the camera.</p>
+          <h2>Extra check</h2>
+          <p class="sub" id="stepup-text">Press Start, then blink twice slowly while looking at the camera.</p>
+          <label id="pin-row" hidden>PIN (offline mode needs your PIN as well as a blink)
+            <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="8"
+                   pattern="\d{4,8}" placeholder="4 to 8 digits">
+          </label>
           <div class="row">
-            <button id="blink-start">Start blink check</button>
+            <button id="blink-start">Start check</button>
             <span id="blink-status" class="countdown"></span>
           </div>
         </div>

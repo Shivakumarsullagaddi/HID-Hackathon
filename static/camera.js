@@ -24,17 +24,39 @@ async function api(path, options = {}) {
   return data;
 }
 
+// People see three outcomes. REQUEST_VERIFICATION is the internal biometric
+// label; it always leads to a step-up, so it is shown with the same name.
 const DECISION_LABEL = {
-  ALLOW: 'ALLOW', DENY: 'DENY', REQUEST_VERIFICATION: 'VERIFICATION NEEDED',
+  ALLOW: 'ALLOW', DENY: 'DENY',
+  STEP_UP_VERIFICATION: 'STEP-UP VERIFICATION', REQUEST_VERIFICATION: 'STEP-UP VERIFICATION',
 };
-const DECISION_ICON = { ALLOW: '✓', DENY: '✕', REQUEST_VERIFICATION: '?' };
+const DECISION_ICON = { ALLOW: '✓', DENY: '✕', STEP_UP_VERIFICATION: '?', REQUEST_VERIFICATION: '?' };
+const DOT_CLASS = { ALLOW: 'ALLOW', DENY: 'DENY', STEP_UP_VERIFICATION: 'REQUEST_VERIFICATION',
+  REQUEST_VERIFICATION: 'REQUEST_VERIFICATION' };
+const STATE_CLASS = { ONLINE: 'good', DEGRADED: 'warn', LOCKED: 'bad' };
 
 function decisionPill(decision) {
-  return `<span class="pill"><span class="dot ${esc(decision)}"></span>` +
+  return `<span class="pill"><span class="dot ${esc(DOT_CLASS[decision] || decision)}"></span>` +
     `${DECISION_ICON[decision] || ''} ${esc(DECISION_LABEL[decision] || decision)}</span>`;
 }
 
-// Shows the liveness mode in the header and warns loudly when degraded.
+function fmtSeconds(s) {
+  if (s == null) return 'n/a';
+  s = Math.max(0, Math.round(s));
+  return s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
+}
+
+// Kiosk state badge: ONLINE green, DEGRADED amber, LOCKED red.
+function stateBadge(st) {
+  if (!st) return '';
+  const age = st.snapshot_age_s == null ? 'no snapshot'
+    : `snapshot ${fmtSeconds(st.snapshot_age_s)} old, ${fmtSeconds(st.time_left_s)} left`;
+  const sim = st.simulated_outage || st.force_offline ? ' · SIMULATED OUTAGE' : '';
+  return `<span class="pill" title="${esc(st.reason)}"><span class="dot ${STATE_CLASS[st.state] || ''}"></span>` +
+    `<b>${esc(st.state)}</b>&nbsp;· ${esc(age)}${sim}</span>`;
+}
+
+// Shows the liveness mode and kiosk state in the header, warns loudly when degraded.
 async function showStatus() {
   const badge = $('#mode-badge');
   try {
@@ -42,6 +64,14 @@ async function showStatus() {
     const ok = s.liveness_mode === 'ensemble' && s.identity_available;
     badge.innerHTML = `<span class="pill"><span class="dot ${ok ? 'good' : 'warn'}"></span>` +
       `liveness: ${esc(s.liveness_mode)}${s.identity_available ? '' : ' · identity OFF'}</span>`;
+    const stateBox = $('#state-badge');
+    if (stateBox) {
+      const refresh = async () => {
+        try { stateBox.innerHTML = stateBadge(await api('/api/state')); } catch (e) { /* keep last */ }
+      };
+      refresh();
+      setInterval(refresh, 3000);
+    }
     const warn = $('#status-banner');
     if (warn && !ok) {
       warn.hidden = false;

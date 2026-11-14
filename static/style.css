@@ -108,4 +108,13 @@ td.num, th.num { text-align: right; }
 .tile .l { color: var(--text-2); font-size: 13px; }
 .tile .n { color: var(--text-3); font-size: 12px; }
 .chart-box { position: relative; height: 260px; }
+.toolbar { margin: 0 0 14px; gap: 18px; }
+label.inline { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-2); }
+label.toggle input { width: 18px; height: 18px; }
+.sim-tag {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; color: #0b0b0b;
+  background: var(--warn); border-radius: 4px; padding: 1px 6px;
+}
+#pin-row { margin: 0 0 6px; }
+#pin { font-size: 20px; letter-spacing: .3em; width: 12ch; }
 code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }

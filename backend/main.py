@@ -142,7 +142,8 @@ def metrics_page():
 
 @app.get("/api/status")
 def status():
-    return pipe().status()
+    return {**pipe().status(), "central_configured": state.get("agent") is not None,
+            "central_url": config.CENTRAL_URL}
 
 
 @app.get("/api/state")
@@ -324,6 +325,8 @@ def metrics():
         "kiosk_log": {
             "n": len(first),
             "decisions": dict(Counter(r["decision"] for r in first)),
+            "final_decisions": dict(Counter(r["final_decision"] for r in first
+                                            if r.get("final_decision"))),
             "stepups": dict(Counter(r["decision"] for r in kiosk if r.get("stage") == "stepup")),
             "liveness_modes": dict(Counter(r["liveness_mode"] for r in first)),
             "p50_ms": round(float(np.percentile(lat, 50)), 1) if lat else None,

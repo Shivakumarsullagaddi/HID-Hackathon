@@ -26,6 +26,8 @@
         </div>
         <form id="enrol-form" class="row">
           <input id="name" placeholder="Full name" maxlength="60" required style="flex:1">
+          <input id="pin" type="password" inputmode="numeric" autocomplete="new-password"
+                 pattern="\d{4,8}" maxlength="8" placeholder="PIN (4-8 digits)" style="width:16ch">
           <button id="enrol" disabled>Capture and enrol</button>
         </form>
         <p id="message" class="sub" style="margin-top:12px">Five frames are taken over two seconds.
