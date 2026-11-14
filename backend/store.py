@@ -140,6 +140,7 @@ class Store:
             "biometrics_scrubbed": True,
             "integrity_hash": integrity_hash,
             "latency_ms": record.get("latency_ms"),
+            "liveness_mode": record.get("liveness_mode", "offline"),
         }
 
     def append_offline_decision(self, record: dict) -> dict:

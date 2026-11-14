@@ -298,3 +298,11 @@ def test_end_to_end_context_aware_and_offline(client, imgs):
     assert c_on["online"] is True
     assert c_on["last_sync"]["synced_count"] >= 1
     assert c_on["offline_queue_size"] == 0
+
+    # Ensure /api/metrics handles synced offline records without missing key errors
+    m = client.get("/api/metrics")
+    assert m.status_code == 200
+    m_body = m.json()
+    assert "kiosk_log" in m_body
+    assert "liveness_modes" in m_body["kiosk_log"]
+    assert m_body["kiosk_log"]["n"] >= 1

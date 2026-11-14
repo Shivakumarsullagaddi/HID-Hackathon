@@ -13,6 +13,7 @@ models/buffalo_sc/
 # Biometric and runtime data never leaves the machine.
 data/gallery.json
 data/decisions.jsonl
+data/offline_queue.jsonl
 data/metrics.json
 data/*.tmp
 data/lab/*
