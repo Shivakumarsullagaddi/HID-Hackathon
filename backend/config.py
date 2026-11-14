@@ -88,6 +88,7 @@ FORCE_OFFLINE = setting("FORCE_OFFLINE", "0") == "1"
 _ttl_override = setting("SNAPSHOT_TTL_OVERRIDE_S")
 SNAPSHOT_TTL_OVERRIDE_S = int(_ttl_override) if _ttl_override else None  # can only shorten
 
+BACKGROUND_POLL = setting("BACKGROUND_POLL", "1") == "1"   # tests turn it off
 POLL_INTERVAL_S = 5.0
 POLL_TIMEOUT_S = 1.0
 FAILURES_TO_DEGRADED = 3

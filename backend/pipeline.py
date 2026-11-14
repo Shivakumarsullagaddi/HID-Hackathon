@@ -96,6 +96,9 @@ class Pipeline:
             "liveness_error": self.liveness.error,
             "identity_available": self.faces.identity_available,
             "identity_error": self.faces.error,
+            "kiosk_state": self.state.current()[0],
+            "kiosk_id": config.KIOSK_ID,
+            "room_id": config.KIOSK_ROOM_ID,
         }
 
     def _analyse(self, frames, user_id=None, identity_frames=None):

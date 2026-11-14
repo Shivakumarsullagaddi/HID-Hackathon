@@ -2,8 +2,14 @@
 
     uvicorn backend.main:app --host 127.0.0.1 --port 8000
 """
+import asyncio
 import base64
 import logging
+import tempfile
+from pathlib import Path
+
+import httpx
+from pydantic import BaseModel, ConfigDict
 from collections import Counter
 from contextlib import asynccontextmanager
 
@@ -17,6 +23,7 @@ from .models import (BlinkRequest, BlinkResponse, ClipCreate, EnrolRequest, Enro
                      StandingUpdate, UserOut, VerifyRequest, VerifyResponse)
 from .db import kiosk_startup
 from .pipeline import FrameError, Pipeline, decode_frames
+from .state import StateManager
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -32,10 +39,52 @@ async def lifespan(app):
                     config.MODE)
     # Back up data/kiosk.db, then upgrade it. On failure the backup is restored
     # and the kiosk starts LOCKED (see state.py).
-    state["db_error"] = kiosk_startup(config.KIOSK_DB_PATH)
-    state["pipeline"] = Pipeline(Store(migrate=False))
+    db_error = kiosk_startup(config.KIOSK_DB_PATH)
+    try:
+        store = Store(migrate=False)
+    except Exception as e:  # noqa: BLE001 - labelled fallback, kiosk stays LOCKED
+        db_error = db_error or f"{type(e).__name__}: {e}"
+        fallback = Path(tempfile.mkdtemp(prefix="kiosk-locked-"))
+        log.error("kiosk database unusable (%s); running LOCKED on an empty "
+                  "temporary database at %s", db_error, fallback)
+        store = Store(fallback)
+    http = httpx.Client(timeout=config.POLL_TIMEOUT_S)
+    agent = make_sync_agent(store, http)
+    manager = StateManager(store, health=lambda: central_healthy(http), db_error=db_error,
+                           sync=agent.sync if agent else None)
+    if agent:
+        agent.on_applied = manager.snapshot_applied
+    state.update(db_error=db_error, http=http, agent=agent, manager=manager)
+    state["pipeline"] = Pipeline(store, state=manager)
     log.info("pipeline ready: %s", state["pipeline"].status())
-    yield
+    task = asyncio.create_task(poll_forever(manager)) if config.BACKGROUND_POLL else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+        http.close()
+
+
+def central_healthy(http):
+    r = http.get(f"{config.CENTRAL_URL}/health")
+    return r.status_code == 200 and r.json().get("ok") is True
+
+
+def make_sync_agent(store, http):
+    """Sync agent (push outbox, pull snapshot); added in build step 6."""
+    return None
+
+
+async def poll_forever(manager):
+    """Poll central every 5 s (1 s timeout). Runs the blocking poll in a
+    thread so verification requests are never held up by the network."""
+    while True:
+        try:
+            await asyncio.to_thread(manager.poll_once)
+        except Exception:  # noqa: BLE001 - keep polling whatever happens
+            log.exception("poll failed")
+        await asyncio.sleep(config.POLL_INTERVAL_S)
 
 
 app = FastAPI(title="Spot-a-Spoof", lifespan=lifespan)
@@ -84,6 +133,27 @@ def metrics_page():
 @app.get("/api/status")
 def status():
     return pipe().status()
+
+
+@app.get("/api/state")
+def kiosk_state():
+    """State, snapshot version and age, time left before LOCKED, outbox size."""
+    return pipe().state.info()
+
+
+class SimulateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outage: bool
+
+
+@app.post("/api/state/simulate")
+def simulate_outage(body: SimulateIn):
+    """Demo control, labelled SIMULATED in the UI: polls are skipped and count
+    as failures, exactly as if central were unreachable."""
+    manager = state.get("manager")
+    if manager is None:
+        raise HTTPException(409, "no state manager")
+    return manager.set_simulated_outage(body.outage)
 
 
 @app.post("/api/verify", response_model=VerifyResponse)
