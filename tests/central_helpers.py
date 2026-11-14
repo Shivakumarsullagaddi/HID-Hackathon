@@ -27,6 +27,7 @@ class Clock:
 
 class Central:
     def __init__(self, tmp_path, clock=None, reconcile=True):
+        tmp_path.mkdir(parents=True, exist_ok=True)
         self.url = sqlite_url(tmp_path / "central.db")
         upgrade("central", self.url)
         self.clock = clock or Clock()

@@ -62,6 +62,7 @@ class VerifyResponse(AccessFields):
 class EnrolRequest(StrictModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
     frames: list[Frame] = Field(min_length=5, max_length=5)
+    pin: Optional[Pin] = None   # required when enrolling through central
 
 
 class EnrolResponse(BaseModel):

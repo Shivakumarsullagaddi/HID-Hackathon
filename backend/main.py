@@ -8,8 +8,10 @@ import logging
 import tempfile
 from pathlib import Path
 
+from typing import Optional
+
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from collections import Counter
 from contextlib import asynccontextmanager
 
@@ -25,6 +27,7 @@ from .db import kiosk_startup
 from .pipeline import FrameError, Pipeline, decode_frames
 from .state import StateManager
 from .store import Store
+from .sync import SyncAgent, SyncError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("spoof.main")
@@ -54,6 +57,7 @@ async def lifespan(app):
                            sync=agent.sync if agent else None)
     if agent:
         agent.on_applied = manager.snapshot_applied
+        manager.warnings = agent.warnings
     state.update(db_error=db_error, http=http, agent=agent, manager=manager)
     state["pipeline"] = Pipeline(store, state=manager)
     log.info("pipeline ready: %s", state["pipeline"].status())
@@ -72,8 +76,14 @@ def central_healthy(http):
 
 
 def make_sync_agent(store, http):
-    """Sync agent (push outbox, pull snapshot); added in build step 6."""
-    return None
+    """Sync agent (push outbox, pull snapshot). Without a kiosk API key the
+    kiosk cannot sync: it stays LOCKED (no snapshot) and says why."""
+    if not config.KIOSK_API_KEY:
+        log.error("KIOSK_API_KEY is not set: this kiosk cannot reach central and will stay "
+                  "LOCKED. Run: python tools/seed_central.py --write-env data/kiosk.env")
+        return None
+    return SyncAgent(store, http, config.CENTRAL_URL, config.KIOSK_ID, config.KIOSK_API_KEY,
+                     config.SNAPSHOT_HMAC_KEY, ttl_override_s=config.SNAPSHOT_TTL_OVERRIDE_S)
 
 
 async def poll_forever(manager):
@@ -173,13 +183,39 @@ def stepup_blink(req: BlinkRequest):
 
 # ---- users -------------------------------------------------------------
 
+CENTRAL_OWNS_USERS = ("Users are managed by the central service: change standing on the "
+                      "central admin page (port 9000).")
+
+
+def agent():
+    """The sync agent, or None when the kiosk runs without a central service
+    (tests, local-only development)."""
+    return state.get("agent")
+
+
 @app.post("/api/enrol", response_model=EnrolResponse)
 def enrol(req: EnrolRequest):
+    frames = frames_or_400(req.frames)
+    a = agent()
+    if a is None:   # no central configured: local-only enrolment (tests, development)
+        try:
+            user = pipe().enrol(req.name, frames)
+        except FrameError as e:
+            raise HTTPException(400, str(e))
+        log.warning("enrolled %s locally only: no central service configured", user["id"])
+        return {"user_id": user["id"], "status": "enrolled"}
+    if not req.pin:
+        raise HTTPException(422, "a 4 to 8 digit PIN is required")
     try:
-        user = pipe().enrol(req.name, frames_or_400(req.frames))
+        embedding = pipe().embed_for_enrol(frames)
     except FrameError as e:
         raise HTTPException(400, str(e))
-    return {"user_id": user["id"], "status": "enrolled"}
+    try:
+        body = a.enrol(req.name, embedding, req.pin)
+    except (httpx.HTTPError, SyncError) as e:
+        log.error("enrolment failed: %s", e)
+        raise HTTPException(503, "Enrolment needs the central service, which is not reachable.")
+    return {"user_id": body["user_id"], "status": "enrolled"}
 
 
 @app.get("/api/users", response_model=list[UserOut])
@@ -189,6 +225,8 @@ def users():
 
 @app.patch("/api/users/{user_id}", response_model=UserOut)
 def set_standing(user_id: str, body: StandingUpdate):
+    if agent() is not None:
+        raise HTTPException(409, CENTRAL_OWNS_USERS)
     user = pipe().store.set_standing(user_id, body.standing)
     if not user:
         raise HTTPException(404, "unknown user")
@@ -197,9 +235,34 @@ def set_standing(user_id: str, body: StandingUpdate):
 
 @app.delete("/api/users/{user_id}")
 def delete_user(user_id: str):
+    if agent() is not None:
+        raise HTTPException(409, CENTRAL_OWNS_USERS)
     if not pipe().store.delete_user(user_id):
         raise HTTPException(404, "unknown user")
     return {"deleted": user_id}
+
+
+@app.post("/api/sync")
+def sync_now():
+    """Run one poll now (health, push, pull) instead of waiting up to 5 s."""
+    manager = state.get("manager")
+    if manager is None:
+        raise HTTPException(409, "no state manager")
+    manager.poll_once()
+    return manager.info()
+
+
+class AttemptsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    room_id: Optional[str] = Field(None, pattern=r"^[a-z0-9_]{1,32}$")
+
+
+@app.post("/api/attempts/failed")
+def failed_attempts(body: AttemptsIn):
+    """Audit record after 3 failed attempts within 2 minutes (kiosk page).
+    Report only: it never opens anything."""
+    rec = pipe().report_failed_attempts(body.room_id)
+    return {"record_id": rec["record_id"], "final_decision": rec["final_decision"]}
 
 
 # ---- spoof lab ---------------------------------------------------------

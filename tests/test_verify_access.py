@@ -133,6 +133,48 @@ def test_degraded_requires_blink_and_pin(setup, imgs):
         p.pin_lockout._locked_until.clear()
 
 
+def test_kiosk_decisions_go_to_the_outbox_lab_and_harness_do_not(setup, imgs):
+    from sqlalchemy import select
+    from backend.kiosk_models import DecisionOutbox
+    from backend.outbox import GENESIS, HASHED_FIELDS, record_hash
+    p, _, _ = setup
+    before = p.store.outbox_counts()["total"]
+    r = p.verify(burst(imgs["image_T1"], seed=11))
+    p.verify(burst(imgs["image_T1"], seed=12), source="harness")
+    p.verify(burst(imgs["image_T1"], seed=13), source="lab")
+    assert p.store.outbox_counts()["total"] == before + 1
+    with p.store.session() as s:
+        rows = s.scalars(select(DecisionOutbox).order_by(DecisionOutbox.seq)).all()
+    last = rows[-1]
+    assert last.record_id == r["record_id"] and last.final_decision == r["final_decision"]
+    assert last.kiosk_state == "ONLINE" and last.user_id == r["matched_user"]
+    prev = GENESIS
+    for row in rows:                                   # the hash chain is intact
+        assert row.prev_hash == prev
+        assert row.record_hash == record_hash(prev, {k: getattr(row, k) for k in HASHED_FIELDS})
+        prev = row.record_hash
+
+
+def test_stepup_outbox_record_links_to_first(setup, imgs):
+    from sqlalchemy import select
+    from backend.kiosk_models import DecisionOutbox
+    p, _, _ = setup
+    p.state = StaticState(DEGRADED, 7)
+    try:
+        r = p.verify(burst(imgs["image_T1"]))
+        out = p.stepup_blink(blink_clip(p, imgs["image_T1"], closed=(8, 9)), r["request_id"],
+                             pin="4321")
+    finally:
+        p.state = StaticState(ONLINE, 7)
+    with p.store.session() as s:
+        rows = s.scalars(select(DecisionOutbox).where(
+            DecisionOutbox.request_id == r["request_id"]).order_by(DecisionOutbox.seq)).all()
+    assert [x.record_id for x in rows] == [r["record_id"], out["record_id"]]
+    assert rows[1].stepup_of == r["record_id"] and rows[0].stepup_of is None
+    assert [x.final_decision for x in rows] == ["STEP_UP_VERIFICATION", "ALLOW"]
+    assert rows[1].kiosk_state == "DEGRADED"
+
+
 def test_pin_never_reaches_the_log(setup):
     p, _, _ = setup
     import json

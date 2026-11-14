@@ -17,6 +17,7 @@ import numpy as np
 from . import config, decision
 from .identity import FaceEngine, match, mean_embedding
 from .db import utcnow
+from .kiosk_models import DecisionOutbox
 from .liveness import LivenessEngine, detect_blink
 from .pin import PinLockout, verify_pin
 from .schedule import check_schedule, in_exam_window
@@ -173,8 +174,39 @@ class Pipeline:
     # ---- blink step-up -------------------------------------------------
     def _persist(self, record, now):
         """Local log always; kiosk decisions also go to the outbox, in the
-        same transaction. Lab and harness runs are test tooling: no outbox."""
-        self.store.append_decision(record)
+        same transaction. Lab and harness runs are test tooling: no outbox.
+        The outbox row holds decisions and scores only: no frames, images
+        or embeddings."""
+        if record.get("source") != "kiosk":
+            self.store.append_decision(record)
+            return
+        row = DecisionOutbox(
+            record_id=record["record_id"], request_id=record["request_id"],
+            stepup_of=record.get("stepup_of"), ts=now, room_id=record["room_id"],
+            user_id=record.get("matched_user"), bio_decision=record["bio_decision"],
+            final_decision=record["final_decision"],
+            reason=(record["final_reason"] or "")[:120], kiosk_state=record["kiosk_state"],
+            snapshot_version=record.get("snapshot_version"), liveness=record.get("liveness"),
+            similarity=record.get("similarity"), latency_ms=record.get("latency_ms"),
+            liveness_mode=record.get("liveness_mode"))
+        self.store.append_access_record(record, row)
+
+    def report_failed_attempts(self, room_id=None):
+        """Alert-worthy audit record after repeated failed attempts (the
+        kiosk page calls this after 3 failures within 2 minutes)."""
+        now = self.clock()
+        room_id = room_id or config.KIOSK_ROOM_ID
+        kiosk_state, snapshot_version = self.state.current(now)
+        record = {
+            "ts": now_iso(), "request_id": uuid.uuid4().hex, "record_id": str(uuid.uuid4()),
+            "stage": "attempts", "source": "kiosk", "room_id": room_id,
+            "final_decision": decision.DENY, "final_reason": "Repeated failed attempts",
+            "bio_decision": decision.DENY, "kiosk_state": kiosk_state,
+            "snapshot_version": snapshot_version, "decision": decision.DENY,
+            "reason": "Repeated failed attempts", "matched_user": None,
+        }
+        self._persist(record, now)
+        return record
 
     def stepup_blink(self, frames, request_id=None, pin=None):
         """Blink check. With a pending request_id the result replaces the first
@@ -274,6 +306,10 @@ class Pipeline:
 
     # ---- enrolment -----------------------------------------------------
     def enrol(self, name, frames):
+        """Local enrolment (tests, or a kiosk with no central configured)."""
+        return self.store.add_user(name, self.embed_for_enrol(frames).tolist())
+
+    def embed_for_enrol(self, frames):
         """Mean embedding over 5 frames; every frame must show a usable face."""
         if not self.faces.identity_available:
             raise FrameError(f"identity model unavailable: {self.faces.error}")
@@ -286,5 +322,4 @@ class Pipeline:
         gate_passed, gate_reason, _ = quality_gate(frames, faces)
         if not gate_passed:
             raise FrameError(f"image quality too low to enrol: {gate_reason}")
-        emb = mean_embedding([self.faces.embed(f, fc) for f, fc in zip(frames, faces)])
-        return self.store.add_user(name, emb.tolist())
+        return mean_embedding([self.faces.embed(f, fc) for f, fc in zip(frames, faces)])
