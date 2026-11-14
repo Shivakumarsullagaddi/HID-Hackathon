@@ -239,17 +239,29 @@ def ingest(s, kiosk, records, now, on_new=None):
 
 
 def check_chain(s, kiosk, row):
-    """Hash chain check for one new record (stretch goal). Writes an
-    outbox_tampered alert when the record's hash does not recompute, or it
-    does not follow the last record seen from this kiosk."""
+    """Hash chain check for one new record. Writes an outbox_tampered alert
+    when the record's own hash does not recompute, or the record does not
+    follow on from the last record central holds from this kiosk (a record
+    changed, removed, or the outbox reset). New records arrive in seq order.
+
+    Limit: this catches edits and deletions relative to what central already
+    has. Someone with write access to the kiosk database could rewrite the
+    whole unsynced tail consistently; that needs a kiosk-held signing key
+    (TPM) to stop, which this prototype does not have."""
     problems = []
     if record_hash(row.prev_hash, {k: getattr(row, k) for k in DECISION_FIELDS}) != row.record_hash:
-        problems.append("record_hash does not match the record")
-    expected_prev = kiosk.last_hash or GENESIS
-    if row.seq > kiosk.last_seq and row.prev_hash != expected_prev and kiosk.last_seq:
-        problems.append(f"prev_hash breaks the chain after seq {kiosk.last_seq}")
-    if row.seq > kiosk.last_seq:
-        kiosk.last_seq, kiosk.last_hash = row.seq, row.record_hash
+        problems.append("record_hash does not match the record contents")
+    last_seq, last_hash = kiosk.last_seq or 0, kiosk.last_hash
+    if last_seq:
+        if row.seq <= last_seq:
+            problems.append(f"seq {row.seq} is not after {last_seq}: outbox reset or replayed")
+        elif row.seq > last_seq + 1:
+            problems.append(f"records {last_seq + 1} to {row.seq - 1} are missing")
+        elif row.prev_hash != last_hash:
+            problems.append(f"prev_hash does not match record {last_seq}: a record was changed or removed")
+    elif row.seq == 1 and row.prev_hash != GENESIS:
+        problems.append("first record does not start the chain")
+    kiosk.last_seq, kiosk.last_hash = row.seq, row.record_hash
     if problems:
         add_alert(s, "outbox_tampered", row.received_at, record_id=row.record_id,
                   user_id=row.user_id, kiosk_id=kiosk.id, detail="; ".join(problems))

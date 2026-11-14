@@ -84,15 +84,20 @@ class SyncAgent:
         from datetime import datetime, timezone
         cutoff_dt = datetime.fromtimestamp(cutoff, timezone.utc)
         with self.store.transaction() as s:
+            # The newest row is always kept: it carries the hash chain head and
+            # stops SQLite from restarting seq at 1 on an empty table.
+            newest = s.scalar(select(func.max(DecisionOutbox.seq))) or 0
             purged = s.execute(delete(DecisionOutbox).where(
                 DecisionOutbox.synced_at.is_not(None),
-                DecisionOutbox.synced_at < cutoff_dt)).rowcount
+                DecisionOutbox.synced_at < cutoff_dt,
+                DecisionOutbox.seq < newest)).rowcount
             total = s.scalar(select(func.count()).select_from(DecisionOutbox))
             over = total - config.OUTBOX_MAX_ROWS
             dropped = 0
             if over > 0:
                 oldest = s.scalars(select(DecisionOutbox.seq)
-                                   .where(DecisionOutbox.synced_at.is_not(None))
+                                   .where(DecisionOutbox.synced_at.is_not(None),
+                                          DecisionOutbox.seq < newest)
                                    .order_by(DecisionOutbox.seq).limit(over)).all()
                 if oldest:
                     dropped = s.execute(delete(DecisionOutbox)

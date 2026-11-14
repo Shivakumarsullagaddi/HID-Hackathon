@@ -8,11 +8,13 @@ have known: its snapshot predates the suspension. The alert is for a human
 to follow up.
 
 repeated_failed_attempts: the kiosk reported 3 failed attempts in 2 minutes.
+
+outbox_tampered: the record breaks the kiosk's hash chain (service.check_chain).
 """
 from sqlalchemy import select
 
 from .models import StandingEvent
-from .service import add_alert
+from .service import add_alert, check_chain
 
 
 def standing_at(s, user_id, ts):
@@ -24,6 +26,7 @@ def standing_at(s, user_id, ts):
 
 
 def on_new_record(s, kiosk, row):
+    check_chain(s, kiosk, row)          # outbox_tampered on a hash-chain break
     if (row.user_id and row.kiosk_state != "ONLINE" and row.final_decision == "ALLOW"
             and standing_at(s, row.user_id, row.ts) == "suspended"):
         add_alert(s, "offline_allow_after_suspension", row.received_at,
